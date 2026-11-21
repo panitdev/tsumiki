@@ -133,11 +133,29 @@ export function writeNbt(kind: Kind, name: string, dataVersion: number, bounds: 
   return file.write();
 }
 
+const renamedBlocks: Readonly<Record<string, string>> = {
+  grass: "short_grass",
+  grass_path: "dirt_path",
+  chain: "iron_chain",
+  wall_sign: "oak_wall_sign",
+  sign: "oak_sign",
+};
+
+function upgradeState(state: string) {
+  const bare = state.replace(/^minecraft:/, "");
+  if (bare.startsWith("cauldron[level=")) {
+    return bare === "cauldron[level=0]" ? "cauldron" : bare.replace(/^cauldron/, "water_cauldron");
+  }
+  const id = bare.split("[", 1)[0];
+  const renamed = Object.hasOwn(renamedBlocks, id) ? renamedBlocks[id] : undefined;
+  return renamed ? renamed + bare.slice(id.length) : bare;
+}
+
 function normalizePalette(states: string[]) {
   return states.map((state) => {
     if (/^(?:minecraft:)?(?:air|cave_air|void_air)$/.test(state)) return "air";
     try {
-      return normalizeBlock(state);
+      return normalizeBlock(upgradeState(state));
     } catch (error) {
       throw new ToolError(`Cannot import block "${state}".`, error instanceof Error ? error.message : "Use blocks supported by Java 26.3.");
     }

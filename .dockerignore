@@ -11,3 +11,4 @@ node_modules
 workspace
 *.jar
 *.tsbuildinfo
+spec.md

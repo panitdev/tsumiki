@@ -31,7 +31,7 @@ function context() {
 function resultMessage(value: Result | ImageResult) {
   const result = ("png" in value ? value.result : value) as Result;
   const png = "png" in value ? value.png as Buffer : undefined;
-  const response = { ...result, summary: result.summary ?? String(result.error ?? "Request failed.") };
+  const response = { ...result, summary: (result.summary ?? String(result.error ?? "Request failed.")).split(/\r?\n/, 1)[0] };
   const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [
     { type: "text", text: JSON.stringify(response) },
   ];
@@ -84,7 +84,15 @@ const handler = createMcpHandler((server) => {
   }));
 
   server.registerTool("build", {
-    description: "Run a sandboxed JavaScript build as one undo step. APIs are set, fill, get, turn, fam, rand and log. Box coordinates are inclusive. Limits: 10 seconds and 2 million writes.",
+    description: [
+      "Run synchronous JavaScript against the open structure as one undo step.",
+      "Use set(x,y,z,block), fill([x1,y1,z1,x2,y2,z2],block), get(x,y,z),",
+      "turn(block,{rotate:90,mirror:'x'}), fam(id), rand(), and log(...values).",
+      "Fill corners are inclusive. A block can be 'oak_stairs[facing=north]',",
+      "'stone_bricks*6,mossy_stone_bricks*2', or (x,y,z)=>id. Air erases.",
+      "Positive rotations are clockwise. Set seed to repeat rand() and mixes.",
+      "Each call can run for 10 seconds and write up to 2 million blocks.",
+    ].join(" "),
     inputSchema: z.object({ code: z.string().min(1).max(262_144), look: z.union([views, z.literal(false)]).default("iso_se"), seed: z.number().int().optional() }),
   }, tool(async ({ code, look, seed }) => {
     const name = await activeStructure(context().workspace);
@@ -145,7 +153,7 @@ const handler = createMcpHandler((server) => {
   }));
 
   server.registerTool("save", {
-    description: "Export the active structure to the workspace and get a download URL and material list. Paths are relative to the workspace.",
+    description: "Export the active structure to the workspace and get a download URL and material list. Paths must be within the workspace.",
     inputSchema: z.object({ format: z.enum(formats).default("schem"), path: z.string().min(1).optional(), version: z.string().default("26.3") }),
   }, tool(async ({ format, path, version }) => {
     const { info, blocks } = await snapshot(await activeStructure(context().workspace));

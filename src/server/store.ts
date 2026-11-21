@@ -121,11 +121,16 @@ function decode<T>(buffer: Buffer): T {
   return JSON.parse(gunzipSync(buffer).toString("utf8")) as T;
 }
 
-function packChunks(blocks: ReadonlyMap<string, string>): Chunk[] {
+function chunkKey(x: number, y: number, z: number) {
+  return blockKey(Math.floor(x / 16), Math.floor(y / 16), Math.floor(z / 16));
+}
+
+function packChunks(blocks: ReadonlyMap<string, string>, affected?: Set<string>): Chunk[] {
   const chunks = new Map<string, ChunkEntry[]>();
   for (const [key, state] of blocks) {
     const [x, y, z] = coordinates(key);
-    const chunk = blockKey(Math.floor(x / 16), Math.floor(y / 16), Math.floor(z / 16));
+    const chunk = chunkKey(x, y, z);
+    if (affected && !affected.has(chunk)) continue;
     const entry: ChunkEntry = [(x & 15) | ((y & 15) << 4) | ((z & 15) << 8), state];
     const entries = chunks.get(chunk);
     if (entries) entries.push(entry);
@@ -148,9 +153,17 @@ async function loadBlocks(client: PoolClient, name: string): Promise<Blocks> {
   return blocks;
 }
 
-async function persist(client: PoolClient, info: StructureInfo, blocks: ReadonlyMap<string, string>): Promise<StructureInfo> {
-  const chunks = packChunks(blocks);
-  await client.query("DELETE FROM tsumiki_chunks WHERE name=$1", [info.name]);
+async function persist(client: PoolClient, info: StructureInfo, blocks: ReadonlyMap<string, string>,
+    affected?: Set<string>): Promise<StructureInfo> {
+  const chunks = affected?.size === 0 ? [] : packChunks(blocks, affected);
+  if (affected?.size) {
+    const positions = [...affected].map(coordinates);
+    await client.query(`
+      DELETE FROM tsumiki_chunks AS chunk
+      USING unnest($2::integer[], $3::integer[], $4::integer[]) AS affected(x,y,z)
+      WHERE chunk.name=$1 AND (chunk.x,chunk.y,chunk.z)=(affected.x,affected.y,affected.z)
+    `, [info.name, positions.map(p => p[0]), positions.map(p => p[1]), positions.map(p => p[2])]);
+  }
   if (chunks.length) {
     await client.query(`
       INSERT INTO tsumiki_chunks (name,x,y,z,blocks)
@@ -164,7 +177,7 @@ async function persist(client: PoolClient, info: StructureInfo, blocks: Readonly
   return rows[0];
 }
 
-async function rewind(client: PoolClient, info: StructureInfo, blocks: Blocks, steps: number) {
+async function rewind(client: PoolClient, info: StructureInfo, blocks: Blocks, steps: number, affected?: Set<string>) {
   if (steps > info.historyDepth) {
     throw new ToolError(`Only ${info.historyDepth} build steps are available.`, "Choose a step count within the current history.");
   }
@@ -174,6 +187,7 @@ async function rewind(client: PoolClient, info: StructureInfo, blocks: Blocks, s
   `, [info.name, info.historyDepth - steps]);
   for (const row of rows) {
     for (const { x, y, z, before } of decode<BlockChange[]>(row.changes)) {
+      affected?.add(chunkKey(x, y, z));
       const key = blockKey(x, y, z);
       if (before === "air") blocks.delete(key);
       else blocks.set(key, before);
@@ -237,7 +251,9 @@ export async function buildStructure<T>(name: string, build: (blocks: Blocks) =>
     if (!updated) return { result };
     info.historyDepth++;
     await client.query("INSERT INTO tsumiki_history (name,step,changes) VALUES ($1,$2,$3)", [name, info.historyDepth, encode(updated.changes)]);
-    return { result, info: await persist(client, info, updated.blocks) };
+    const affected = new Set<string>();
+    for (const { x, y, z } of updated.changes) affected.add(chunkKey(x, y, z));
+    return { result, info: await persist(client, info, updated.blocks, affected) };
   });
   if (info) changeEvents.emit(name, info.version);
   return result;
@@ -247,10 +263,11 @@ export async function undoStructure(name: string, steps: number): Promise<Struct
   const info = await transaction(true, async (client) => {
     const info = await structure(client, name, true);
     const blocks = await loadBlocks(client, name);
-    await rewind(client, info, blocks, steps);
+    const affected = new Set<string>();
+    await rewind(client, info, blocks, steps, affected);
     info.historyDepth -= steps;
     await client.query("DELETE FROM tsumiki_history WHERE name=$1 AND step>$2", [name, info.historyDepth]);
-    return persist(client, info, blocks);
+    return persist(client, info, blocks, affected);
   });
   changeEvents.emit(name, info.version);
   return info;

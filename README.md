@@ -4,7 +4,7 @@ Tsumiki is a TypeScript MCP server for building Minecraft Java Edition structure
 
 ## Local setup
 
-Use Node 26, Postgres, and your Minecraft Java 26.3 client jar. On Debian or Ubuntu, install `build-essential python3 python-is-python3 pkg-config libxi-dev libxext-dev libx11-dev mesa-common-dev libgl1-mesa-dev libegl1 xauth xvfb` before installing the Node dependencies.
+Use Node 22.23.5, Postgres, and your Minecraft Java 26.3 client jar. On Debian or Ubuntu, install `build-essential python3 python-is-python3 pkg-config libxi-dev libxext-dev libx11-dev mesa-common-dev libgl1-mesa-dev libegl1 xauth xvfb` before installing the Node dependencies.
 
 ```sh
 npm ci
@@ -15,7 +15,7 @@ xvfb-run -a npm run dev
 
 Set `DATABASE_URL` in `.env.local` to match your PostgreSQL role and set `MINECRAFT_CLIENT_JAR` to your client jar. Use `LIBGL_ALWAYS_SOFTWARE=1` for software rendering with Mesa. The first request initializes the database schema. Tsumiki extracts rendering assets at runtime and keeps them in memory. The repository and image contain no client jar or texture assets.
 
-Add the Streamable HTTP endpoint to Claude Code:
+Add the Streamable HTTP endpoint to Claude Code.
 
 ```sh
 claude mcp add --transport http tsumiki http://localhost:3000/api/mcp
@@ -33,7 +33,7 @@ set(4, 1, 2, 'iron_door[facing=north,half=lower]')
 set(4, 2, 2, 'iron_door[facing=north,half=upper]')
 ```
 
-Import files and export destinations are confined to `TSUMIKI_WORKSPACE` (default `workspace/`). The formats cover block states. Block entities, item inventories and entities are omitted. The default export targets 26.3. Older Java versions from 1.13 onward use the versioned [mcmeta block reports](https://github.com/misode/mcmeta) over HTTPS and report block ID substitutions. Export downloads use unique URLs.
+Import files and export destinations are confined to `TSUMIKI_WORKSPACE` (default `workspace/`). The formats cover block states. Block entities, item inventories and entities are omitted. The default export targets 26.3. Older Java versions from 1.13 onward use versioned block data over HTTPS and report block ID substitutions. The exporter uses [mcmeta](https://github.com/misode/mcmeta) with a pinned [PrismarineJS catalog](https://github.com/PrismarineJS/minecraft-data) for releases without reports. Material lists count placement items using the 26.3 stack sizes and report technical blocks separately. Export downloads use unique URLs.
 
 ## Deployment on panit
 

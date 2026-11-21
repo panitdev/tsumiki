@@ -4,6 +4,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import type { Blocks } from "../engine";
 import { blockEntries, ToolError, type StructureInfo } from "./store";
 import { readNbt, writeNbt } from "./formats/nbt";
+import { materialList } from "./formats/materials";
 import { targetCatalog } from "./formats/version";
 
 export const formats = ["schem", "litematic", "nbt", "mcfunction"] as const;
@@ -55,7 +56,6 @@ export async function saveStructure(info: StructureInfo, blocks: ReadonlyMap<str
   const paletteIndices = new Map(palette.map((state, i) => [state, i]));
   const translated = new Map<string, number>();
   const substitutions = new Map<string, { from: string; to: string; count: number }>();
-  const counts = new Map<string, number>();
   const cells = [];
   for (const { x, y, z, state } of blockEntries(blocks)) {
     let index = translated.get(state);
@@ -73,13 +73,14 @@ export async function saveStructure(info: StructureInfo, blocks: ReadonlyMap<str
     }
     const replacement = substitutions.get(state);
     if (replacement) replacement.count++;
-    const id = palette[index].split("[", 1)[0];
-    counts.set(id, (counts.get(id) ?? 0) + 1);
     cells.push({ x, y, z, state: index });
   }
+  const { materials, unplaceable } = materialList(palette, cells);
   const [ox, oy, oz] = info.bounds ?? [0, 0, 0];
+  // Strict placement preserves explicit neighbor-dependent states from Java 1.21.5 onward.
+  const strict = target.dataVersion >= 4325 ? " strict" : "";
   const bytes = format === "mcfunction" ? Buffer.from(
-    cells.map(({ x, y, z, state }) => `setblock ~${x - ox} ~${y - oy} ~${z - oz} ${palette[state]}`).join("\n") + "\n",
+    cells.map(({ x, y, z, state }) => `setblock ~${x - ox} ~${y - oy} ~${z - oz} ${palette[state]}${strict}`).join("\n") + "\n",
   ) : writeNbt(format, info.name, target.dataVersion, info.bounds, palette, cells);
   const base = await workspace();
   const defaultName = info.name.replace(/[<>:"|?*]/g, "_") + `.${format}`;
@@ -113,9 +114,7 @@ export async function saveStructure(info: StructureInfo, blocks: ReadonlyMap<str
     console.error("Tsumiki export error", error);
     throw new ToolError("The export could not be saved.", "Check the workspace permissions and file path.");
   }
-  const materials = Array.from(counts, ([id, items]) => ({ id, items, stacks: items / 64, shulkerBoxes: items / 1728 }))
-    .sort((a, b) => b.items - a.items || a.id.localeCompare(b.id));
-  return { path: filepath, downloadUrl: `/api/downloads/${id}`, format, version, materials, substitutions: [...substitutions.values()] };
+  return { path: filepath, downloadUrl: `/api/downloads/${id}`, format, version, materials, unplaceable, substitutions: [...substitutions.values()] };
 }
 
 export async function download(id: string) {

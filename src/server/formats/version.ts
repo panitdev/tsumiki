@@ -1,12 +1,90 @@
-import { expandBlock } from "../../engine";
+import { CATALOG_DATA_VERSION, CATALOG_VERSION, expandBlock } from "../../engine";
 import { ToolError } from "../store";
 
 type Properties = Record<string, string>;
 type Catalog = Record<string, [Record<string, string[]>, Properties]>;
-export const currentVersion = "26.3";
-export const currentDataVersion = 5023;
+type VersionedCatalog = { blocks: Catalog; dataVersion: number };
+export const currentVersion = CATALOG_VERSION;
+export const currentDataVersion = CATALOG_DATA_VERSION;
 
-const cachedVersions = new Map<string, Promise<{ blocks: Catalog; dataVersion: number }>>();
+const cachedVersions = new Map<string, Promise<VersionedCatalog>>();
+const prismarine = "https://raw.githubusercontent.com/PrismarineJS/minecraft-data/68c9e840e127858e9548b0d477b992202120dfaa/data";
+
+interface PrismarineBlock {
+  name: string;
+  minStateId: number;
+  defaultState: number;
+  states: { name: string; type: "bool" | "enum" | "int"; num_values: number; values?: (string | number)[] }[];
+}
+
+async function json<T>(response: Response): Promise<T> {
+  if (!response.ok) throw new Error("Version data not found.");
+  return response.json() as Promise<T>;
+}
+
+async function prismarineCatalog(version: string, signal: AbortSignal): Promise<VersionedCatalog> {
+  const [paths, protocols] = await Promise.all([
+    fetch(`${prismarine}/dataPaths.json`, { signal }).then(json<{ pc: Record<string, { blocks?: string }> }>),
+    fetch(`${prismarine}/pc/common/protocolVersions.json`, { signal })
+      .then(json<{ minecraftVersion: string; dataVersion: number }[]>),
+  ]);
+  const path = paths.pc[version]?.blocks;
+  const protocol = protocols.find((entry) => entry.minecraftVersion === version);
+  if (!path || !protocol || !Number.isSafeInteger(protocol.dataVersion)) throw new Error("Missing Java release.");
+  const report = await fetch(`${prismarine}/${path}/blocks.json`, { signal }).then(json<PrismarineBlock[]>);
+  const blocks: Catalog = Object.fromEntries(report.map(({ name, minStateId, defaultState, states }) => {
+    const allowed = Object.fromEntries(states.map((state) => [
+      state.name,
+      state.type === "bool" ? ["true", "false"] : state.values?.map(String) ??
+        Array.from({ length: state.num_values }, (_, index) => String(index)),
+    ]));
+    const defaults: Properties = {};
+    let index = defaultState - minStateId;
+    // State IDs count through the property values with the last property changing fastest.
+    for (let i = states.length - 1; i >= 0; i--) {
+      const key = states[i].name;
+      const values = allowed[key];
+      defaults[key] = values[index % values.length];
+      index = Math.floor(index / values.length);
+    }
+    if (index !== 0 || Object.values(defaults).some((value) => value === undefined)) {
+      throw new Error("Invalid default block state.");
+    }
+    return [name, [allowed, defaults]];
+  }));
+  if (version === "1.13.1" && path === "pc/1.13") {
+    // Prismarine shares these releases. These changes come from the 1.13.1 vanilla block report.
+    const waterlogged: Catalog[string] = [{ waterlogged: ["true", "false"] }, { waterlogged: "true" }];
+    for (const coral of ["tube", "brain", "bubble", "fire", "horn"]) {
+      blocks[`${coral}_coral`] = waterlogged;
+      blocks[`dead_${coral}_coral`] = waterlogged;
+    }
+    blocks.conduit = waterlogged;
+    blocks.tnt = [{ unstable: ["true", "false"] }, { unstable: "false" }];
+  }
+  if (!blocks.air || !blocks.stone) throw new Error("Incomplete target catalog.");
+  return { blocks, dataVersion: protocol.dataVersion };
+}
+
+async function fetchCatalog(version: string): Promise<VersionedCatalog> {
+  const signal = AbortSignal.timeout(8000);
+  const source = `https://raw.githubusercontent.com/misode/mcmeta/refs/tags/${version}-summary`;
+  const [blocks, metadata] = await Promise.all([
+    fetch(`${source}/blocks/data.json`, { signal }),
+    fetch(`${source}/version.json`, { signal }),
+  ]);
+  if (blocks.status === 404 || metadata.status === 404) return prismarineCatalog(version, signal);
+  const [catalog, info] = await Promise.all([json<Catalog>(blocks), json<{ data_version: number }>(metadata)]);
+  if (!catalog.air) {
+    // Some older reports list only blocks with properties.
+    const registry = await fetch(`${source}/registries/data.json`, { signal }).then(json<{ block: string[] }>);
+    for (const name of registry.block) catalog[name] ??= [{}, {}];
+  }
+  if (!catalog.air || !catalog.stone || !Number.isSafeInteger(info.data_version)) {
+    throw new Error("Incomplete target catalog.");
+  }
+  return { blocks: catalog, dataVersion: info.data_version };
+}
 
 async function olderVersion(version: string) {
   const components = version.split(".").map(Number);
@@ -14,27 +92,13 @@ async function olderVersion(version: string) {
       components[0] > 26 || (components[0] === 26 && components[1] >= 3)) {
     throw new ToolError(`Unsupported target version "${version}".`, "Choose 26.3 or an older Java release from 1.13 onward.");
   }
-  const source = `https://raw.githubusercontent.com/misode/mcmeta/refs/tags/${version}-summary`;
-  const fetchVersion = async () => {
-    try {
-      const signal = AbortSignal.timeout(8000);
-      const [blocks, metadata] = await Promise.all([
-        fetch(`${source}/blocks/data.json`, { signal }),
-        fetch(`${source}/version.json`, { signal }),
-      ]);
-      if (!blocks.ok || !metadata.ok) throw new Error("Version not found.");
-      const [catalog, info] = await Promise.all([blocks.json() as Promise<Catalog>, metadata.json()]);
-      if (!catalog.air || !Number.isSafeInteger(info.data_version)) throw new Error("Incomplete target catalog.");
-      return { blocks: catalog, dataVersion: info.data_version as number };
-    } catch {
-      cachedVersions.delete(version);
-      throw new ToolError(`Block data for Minecraft ${version} is unavailable.`, "Check the Java release number and server connectivity to GitHub.");
-    }
-  };
   let data = cachedVersions.get(version);
   if (!data) {
     if (cachedVersions.size >= 12) cachedVersions.delete(cachedVersions.keys().next().value!);
-    data = fetchVersion();
+    data = fetchCatalog(version).catch(() => {
+      if (cachedVersions.get(version) === data) cachedVersions.delete(version);
+      throw new ToolError(`Block data for Minecraft ${version} is unavailable.`, "Check the Java release number and server connectivity to GitHub.");
+    });
     cachedVersions.set(version, data);
   }
   return data;
@@ -42,6 +106,10 @@ async function olderVersion(version: string) {
 
 const replacements: [RegExp, string][] = [
   [/^sulfur$/, "yellow_concrete"], [/^cinnabar$/, "red_terracotta"],
+  [/^(.+_(?:wool|concrete))_(?:stairs|slab)$/, "$1"],
+  [/^(stripped_)?poplar(?=_|$)/, "$1pale_oak"], [/^(stripped_)?poplar(?=_|$)/, "$1birch"],
+  [/^iron_chain$/, "chain"], [/^dirt_path$/, "grass_path"],
+  [/^oak_sign$/, "sign"], [/^oak_wall_sign$/, "wall_sign"],
   [/^resin_bricks?/, "red_sandstone"], [/^dried_ghast$/, "soul_sand"],
   [/^pale_oak(?=_|$)/, "birch"], [/^cherry(?=_|$)/, "birch"],
   [/^mangrove(?=_|$)/, "jungle"], [/^(?:crimson|warped)(?=_|$)/, "dark_oak"],
