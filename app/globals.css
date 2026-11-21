@@ -1,37 +1,37 @@
 @import "tailwindcss";
 @import "@charlotte-ui/theme";
 
-:root {
-  --background: #f7f7f2;
-  --foreground: #242b20;
-  --card: #fcfcf8;
-  --card-foreground: var(--foreground);
-  --primary: #365748;
-  --primary-foreground: #fff;
-  --muted: #e9ede4;
-  --muted-foreground: #5b6558;
-  --border: #dcdfd5;
-  --ring: #6b927d;
-  --input: #ced7cb;
-  --font-geist-sans: Geist, Inter, system-ui, sans-serif;
-  --font-geist-mono: "SFMono-Regular", Consolas, ui-monospace, monospace;
+@theme inline {
+  --font-sans: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
 }
 
 body {
   min-width: 300px;
   min-height: 100dvh;
-  font-family: var(--font-geist-sans);
+  position: relative;
+  isolation: isolate;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
+
+.site-background { position: fixed; }
 
 .site-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   min-height: 65px;
   padding: 0 clamp(20px, 4vw, 54px);
   border-bottom: 1px solid var(--border);
   background: var(--card);
 }
+
+.agent-connection { display: grid; gap: 16px; font-size: 14px; }
+.agent-connection dt { margin-bottom: 4px; font-weight: 600; }
+.agent-connection dd { color: var(--muted-foreground); line-height: 1.55; overflow-wrap: anywhere; }
+.agent-connection code { color: var(--foreground); }
 
 .wordmark {
   display: inline-flex;
@@ -48,7 +48,7 @@ body {
   width: 32px;
   height: 32px;
   place-items: center;
-  border-radius: 9px;
+  border-radius: var(--radius);
   color: var(--primary-foreground);
   background: var(--primary);
 }
@@ -72,10 +72,9 @@ body {
 
 .structure-list {
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--card);
 }
+
+.structure-directory { overflow: hidden; padding: 0; }
 
 .structure-list > li + li { border-top: 1px solid var(--border); }
 
@@ -89,7 +88,7 @@ body {
   transition: background-color 120ms ease;
 }
 
-.structure-link:hover { background: #eff2e9; }
+.structure-link:hover { background: var(--accent); }
 .structure-link:focus-visible { outline: 2px solid var(--ring); outline-offset: -3px; }
 .structure-link > svg { flex: none; margin-inline-start: auto; }
 
@@ -99,16 +98,16 @@ body {
   height: 44px;
   flex: none;
   place-items: center;
-  border: 1px solid #dce5d9;
+  border: 1px solid var(--border);
   border-radius: 12px;
   color: var(--primary);
-  background: #ebf0e8;
+  background: var(--muted);
 }
 
 .structure-list-details { display: grid; gap: 3px; flex: 1; overflow-wrap: anywhere; }
 .structure-list-details strong { color: var(--foreground); font-size: 15px; font-weight: 650; }
 .structure-list-details > span { font-size: 13px; }
-.list-dimensions { font: 12px var(--font-geist-mono); white-space: nowrap; }
+.list-dimensions { font: 12px var(--font-mono); white-space: nowrap; }
 
 .list-state {
   display: flex;
@@ -118,10 +117,7 @@ body {
   flex-direction: column;
   gap: 13px;
   padding: 28px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
   color: var(--muted-foreground);
-  background: var(--card);
   text-align: center;
   font-size: 14px;
 }
@@ -170,9 +166,9 @@ body {
   font-weight: 550;
 }
 
-.connection > span { width: 6px; height: 6px; border-radius: 50%; background: #78796f; }
-.connection[data-live="true"] { color: #315645; border-color: #d3e2d3; background: #eaf2e8; }
-.connection[data-live="true"] > span { background: #41825c; }
+.connection > span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted-foreground); }
+.connection[data-live="true"] { color: var(--primary); background: var(--accent); }
+.connection[data-live="true"] > span { background: var(--primary); }
 
 .viewer-layout {
   display: grid;
@@ -188,9 +184,9 @@ body {
   isolation: isolate;
   height: clamp(390px, calc(100dvh - 246px), 1000px);
   overflow: hidden;
-  border: 1px solid #d6dbd0;
-  border-radius: 16px;
-  background: radial-gradient(ellipse at 50% 42%, #f7f8f2 0%, #edf0e7 68%, #e3e8dd 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: color-mix(in oklab, var(--background), var(--muted) 42%);
 }
 
 .viewport canvas {
@@ -211,10 +207,9 @@ body {
   display: flex;
   gap: 5px;
   padding: 4px;
-  border: 1px solid #d6dbd0;
+  border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--card);
-  box-shadow: 0 2px 4px #26342610;
 }
 
 .camera-buttons [data-slot="button"] {
@@ -245,10 +240,10 @@ body {
   width: 58px;
   height: 58px;
   place-items: center;
-  border: 1px solid #ccd8ca;
+  border: 1px solid var(--border);
   border-radius: 15px;
   color: var(--primary);
-  background: #e5ebdf;
+  background: var(--muted);
 }
 
 .camera-instructions {
@@ -265,9 +260,8 @@ body {
 .viewer-controls {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--card);
+  padding: 0;
+  gap: 0;
 }
 
 .control-section { padding: 15px 16px 17px; }
@@ -318,7 +312,7 @@ body {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   margin-top: 5px;
-  font: 11px var(--font-geist-mono);
+  font: 11px var(--font-mono);
 }
 
 .position-readout > div { display: flex; gap: 5px; flex-wrap: wrap; border-radius: 5px; padding: 5px; background: var(--muted); }
@@ -332,14 +326,14 @@ body {
   gap: 15px;
   margin-bottom: 15px;
   padding: 8px 12px;
-  border: 1px solid #eacdc5;
-  border-radius: 9px;
-  color: #782c25;
-  background: #f9eee9;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--destructive);
+  background: var(--card);
   font-size: 13px;
 }
 
-.history-error { margin-top: 8px; color: #782c25; font-size: 12px; }
+.history-error { margin-top: 8px; color: var(--destructive); font-size: 12px; }
 .spin { animation: viewer-spin 900ms linear infinite; }
 
 @keyframes viewer-spin { to { transform: rotate(360deg); } }
@@ -366,6 +360,6 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spin { animation: none; }
+  .spin, .site-background > div { animation: none !important; }
   .structure-link { transition: none; }
 }

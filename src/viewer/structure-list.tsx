@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@charlotte-ui/button";
+import { Card } from "@charlotte-ui/card";
 import { ArrowUpRight, Box, LoaderCircle } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -26,42 +27,44 @@ export function StructureList() {
 
   if (error) {
     return (
-      <div className="list-state" role="alert">
+      <Card className="list-state" role="alert">
         <p>{error}</p>
         <Button variant="outline" size="sm" onClick={() => { setError(null); setRequest(request + 1); }}>Try again</Button>
-      </div>
+      </Card>
     );
   }
 
   if (!structures) {
-    return <div className="list-state" role="status"><LoaderCircle className="spin" size={20} /> Loading structures</div>;
+    return <Card className="list-state" role="status"><LoaderCircle className="spin" size={20} /> Loading structures</Card>;
   }
 
   if (structures.length === 0) {
     return (
-      <div className="list-state list-empty">
+      <Card className="list-state list-empty">
         <span className="list-icon"><Box size={22} strokeWidth={1.6} /></span>
         <strong>No structures yet</strong>
-        <p>Structures appear here after your agent opens them in Tsumiki.</p>
-      </div>
+        <p>Connect an agent, then ask it to open a named structure.</p>
+      </Card>
     );
   }
 
   return (
-    <ul className="structure-list" aria-label="Structures">
-      {structures.map((structure) => (
-        <li key={structure.name}>
-          <Link className="structure-link" href={structurePath(structure.name)}>
-            <span className="list-icon"><Box size={21} strokeWidth={1.6} /></span>
-            <span className="structure-list-details">
-              <strong>{structure.name}</strong>
-              <span>{numberFormat.format(structure.blockCount)} {structure.blockCount === 1 ? "block" : "blocks"}</span>
-            </span>
-            {structure.bounds && <span className="list-dimensions">{formatDimensions(structure.bounds)}</span>}
-            <ArrowUpRight size={18} aria-hidden />
-          </Link>
-        </li>
-      ))}
-    </ul>
+    <Card className="structure-directory">
+      <ul className="structure-list" aria-label="Structures">
+        {structures.map((structure) => (
+          <li key={structure.name}>
+            <Link className="structure-link" href={structurePath(structure.name)}>
+              <span className="list-icon"><Box size={21} strokeWidth={1.6} /></span>
+              <span className="structure-list-details">
+                <strong>{structure.name}</strong>
+                <span>{numberFormat.format(structure.blockCount)} {structure.blockCount === 1 ? "block" : "blocks"}</span>
+              </span>
+              {structure.bounds && <span className="list-dimensions">{formatDimensions(structure.bounds)}</span>}
+              <ArrowUpRight size={18} aria-hidden />
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }

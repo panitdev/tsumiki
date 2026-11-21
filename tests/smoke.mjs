@@ -66,6 +66,8 @@ assert.equal((await tool("open", {}))[0].ok, true);
 const [opened] = await tool("open", { name });
 assert.equal(opened.blockCount, 0);
 assert.equal(new URL(opened.viewerUrl).pathname, `/${name}`);
+const [listed] = await tool("open", {});
+assert.equal(listed.structures.find(structure => structure.name === name)?.viewerUrl, opened.viewerUrl);
 const [catalog] = await tool("blocks", { q: "oak_stairs" });
 assert(catalog.results.exact);
 

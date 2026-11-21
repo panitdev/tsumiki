@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@charlotte-ui/button";
+import { Card } from "@charlotte-ui/card";
 import { ChevronLeft, History, Layers3, LoaderCircle, MousePointer2 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useDeferredValue, useEffect, useState } from "react";
@@ -86,7 +87,7 @@ export function StructureViewer({ name }: { name: string }) {
             <span className="sr-only">With the canvas focused, use arrow keys to orbit, Shift and arrow keys to pan, plus and minus to zoom, and Home to frame the structure.</span>
           </p>
         </div>
-        <aside className="viewer-controls" aria-label="Structure controls">
+        <Card className="viewer-controls" role="complementary" aria-label="Structure controls">
           <section className="control-section" aria-labelledby="layer-label">
             <div className="control-heading">
               <Layers3 size={17} aria-hidden />
@@ -145,7 +146,7 @@ export function StructureViewer({ name }: { name: string }) {
             </div>
             <Readout block={inspected} />
           </section>
-        </aside>
+        </Card>
       </div>
     </main>
   );

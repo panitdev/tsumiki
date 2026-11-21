@@ -67,19 +67,23 @@ async function render(...args: Parameters<typeof renderContactSheet>) {
 
 const handler = createMcpHandler((server) => {
   server.registerTool("open", {
-    description: "Open a structure by name, create it, or import workspace .schem, .litematic or .nbt. Omit name to list structures.",
+    description: "Omit name to list existing structure names and viewer links. Supply a name to select or create a structure for this workspace, or import a workspace .schem, .litematic or .nbt.",
     inputSchema: z.object({ name: z.string().max(80).optional(), from: z.string().min(1).optional() }),
   }, tool(async ({ name, from }) => {
+    const { workspace, origin } = context();
+    const viewerUrl = (structure: string) => new URL(`/${encodeURIComponent(structure)}`, origin).href;
     if (name === undefined) {
       if (from) throw new ToolError("An import needs a name.", "Supply a new structure name.");
       const structures = await listStructures();
-      return { ok: true, summary: `${structures.length} structures.`, structures };
+      return {
+        ok: true, summary: `${structures.length} structures.`,
+        structures: structures.map((info) => ({ ...info, viewerUrl: viewerUrl(info.name) })),
+      };
     }
-    const { workspace, origin } = context();
     const { info, blocks } = await openStructure(name, workspace, from ? () => importStructure(from) : undefined);
     return {
       ok: true, summary: `Opened "${name}" with ${info.blockCount} blocks.`, ...info,
-      materials: materials(blocks).slice(0, 10), viewerUrl: new URL(`/${encodeURIComponent(name)}`, origin).href,
+      materials: materials(blocks).slice(0, 10), viewerUrl: viewerUrl(name),
     };
   }));
 
@@ -165,7 +169,7 @@ const handler = createMcpHandler((server) => {
   }));
 }, {
   serverInfo: { name: "Tsumiki", version: "0.1.0" },
-  instructions: "Use open → build → look → save. Coordinates are x east, y up, z south. Use build with look:false to skip the default iso_se PNG.",
+  instructions: "Call open with no arguments to discover existing structure names and viewer links. Call open with the exact name before building, inspecting, or saving it. A new name creates a structure. Share its viewerUrl with the user. Coordinates are x east, y up, z south. Use build with look:false to skip the default iso_se PNG.",
   maxSubscriptions: 0,
 });
 

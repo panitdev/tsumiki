@@ -21,9 +21,9 @@ Add the Streamable HTTP endpoint to Claude Code.
 claude mcp add --transport http tsumiki http://localhost:3000/api/mcp
 ```
 
-Set `TSUMIKI_MCP_TOKEN` in the server environment to require `Authorization: Bearer <token>` on the endpoint. Set the optional `X-Tsumiki-Workspace` header to give each MCP client its own active structure selection. Without the header, clients share the default selection. Named structures and their build history are stored in Postgres across restarts.
+Set `TSUMIKI_MCP_TOKEN` in the server environment to require `Authorization: Bearer <token>` on the endpoint. Set the optional `X-Tsumiki-Workspace` header to give each MCP client its own active structure selection. Without that header, clients share the default selection. Named structures are shared across workspaces and their build history persists in Postgres.
 
-Use `open` to create a named structure, `build` to run a script, `look` or `read` to inspect it, and `save` to export it. `blocks` searches the Java 26.3 catalog, and `undo` rolls back whole build calls. Build counts represent net coordinate changes. Changing an existing non-air state counts as one placement. The returned PNG is MCP image content. Set `look:false` to skip it.
+Call `open({})` to discover existing names and viewer links. Call `open({name})` to select a structure for the current workspace or create it if the name is new. `build` runs a script, `look` or `read` inspects the structure, and `save` exports it. `blocks` searches the Java 26.3 catalog, and `undo` rolls back whole build calls. Build counts represent net coordinate changes. Changing an existing non-air state counts as one placement. The returned PNG is MCP image content. Set `look:false` to skip it.
 
 ```js
 fill([0, 0, 0, 8, 0, 8], 'stone_bricks*6,mossy_stone_bricks*2')
@@ -43,4 +43,4 @@ Install `ops/compose.yml` at `/opt/tsumiki/compose.yml`. Use a dedicated Postgre
 
 Set `DATABASE_URL` and a generated `TSUMIKI_MCP_TOKEN` in `/opt/tsumiki/.env`. Use `docker compose pull` and `docker compose up -d` from `/opt/tsumiki`. After the first image is published, add the entry from `ops/polling-target.txt` to the services array in `/opt/polling-deploy/poll.ts`. The existing systemd timer picks up future GHCR digests.
 
-The existing Cloudflare Tunnel and Traefik network serve the viewer at [tsumiki.panit.dev](https://tsumiki.panit.dev). Configure MCP clients to use `https://tsumiki.panit.dev/api/mcp` with the deployment's bearer token. Compose uses the same HTTPS origin for generated links. Set `TSUMIKI_HOST` to use another hostname routed through the tunnel. The service remains reachable on host loopback port 3017 for diagnostics.
+The existing Cloudflare Tunnel and Traefik network serve the viewer at [tsumiki.panit.dev](https://tsumiki.panit.dev). Open **Connect an agent** for the MCP URL and request headers. Configure MCP clients to use `https://tsumiki.panit.dev/api/mcp` with the deployment's bearer token. Compose uses the same HTTPS origin for generated links. Set `TSUMIKI_HOST` to use another hostname routed through the tunnel. The service remains reachable on host loopback port 3017 for diagnostics.
