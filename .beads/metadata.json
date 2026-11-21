@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "tsumiki",
+  "project_id": "6126d006-069b-4280-9d8a-1b5981b91132"
+}

@@ -1,0 +1,26 @@
+services:
+  tsumiki:
+    image: ghcr.io/panitdev/tsumiki:${TSUMIKI_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set a dedicated Tsumiki database URL}
+      TSUMIKI_MCP_TOKEN: ${TSUMIKI_MCP_TOKEN:?Set a generated MCP bearer token}
+      TSUMIKI_BASE_URL: ${TSUMIKI_BASE_URL:-http://localhost:3000}
+      MINECRAFT_CLIENT_JAR: /assets/client.jar
+    ports:
+      - "127.0.0.1:${TSUMIKI_PORT:-3017}:3000"
+    volumes:
+      - ./workspace:/data
+      - ./assets/client.jar:/assets/client.jar:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 20s
+      timeout: 6s
+      retries: 5
+      start_period: 20s
+    networks:
+      - shared-internal
+
+networks:
+  shared-internal:
+    external: true

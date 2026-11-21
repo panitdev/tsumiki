@@ -1,0 +1,13 @@
+.git
+.beads
+.beads.gate.lock
+.agents
+.aws
+.codex
+.github
+.env*
+.next
+node_modules
+workspace
+*.jar
+*.tsbuildinfo

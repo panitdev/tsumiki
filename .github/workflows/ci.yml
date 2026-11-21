@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tsumiki
+          POSTGRES_PASSWORD: tsumiki
+          POSTGRES_DB: tsumiki
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tsumiki -d tsumiki"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://tsumiki:tsumiki@127.0.0.1:5432/tsumiki
+      MINECRAFT_CLIENT_JAR: /tmp/tsumiki-client.jar
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+      TSUMIKI_MCP_TOKEN: test-only-token
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.13.0
+          cache: npm
+      - name: Install native WebGL dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python-is-python3 libxi-dev libxext-dev libx11-dev libegl1 libgl1-mesa-dev mesa-common-dev xauth xvfb
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Download the Minecraft client jar
+        run: |
+          curl --fail --silent --show-error --location --retry 3 https://piston-data.mojang.com/v1/objects/e877b6a07acd633fb3bb475002175cec036e7b87/client.jar -o "$MINECRAFT_CLIENT_JAR"
+          echo "e877b6a07acd633fb3bb475002175cec036e7b87  $MINECRAFT_CLIENT_JAR" | sha1sum -c
+      - name: Verify the production MCP and viewer
+        run: |
+          xvfb-run -a npm start > /tmp/tsumiki.log 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true; cat /tmp/tsumiki.log' EXIT
+          node tests/smoke.mjs
+
+  image:
+    needs: verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          provenance: mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

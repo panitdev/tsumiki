@@ -1,0 +1,9 @@
+  {
+    name: "tsumiki",
+    packageName: "tsumiki",
+    packageTag: "latest",
+    packageType: "container",
+    image: "ghcr.io/panitdev/tsumiki:latest",
+    composeDir: "/opt/tsumiki",
+    composeFile: "/opt/tsumiki/compose.yml",
+  },

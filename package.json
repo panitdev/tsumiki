@@ -1,0 +1,58 @@
+{
+  "name": "tsumiki",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@charlotte-ui/button": "https://pkg.pr.new/panitdev/charlotte/@charlotte-ui/button@455828a",
+    "@charlotte-ui/theme": "https://pkg.pr.new/panitdev/charlotte/@charlotte-ui/theme@455828a",
+    "@charlotte-ui/utils": "https://pkg.pr.new/panitdev/charlotte/@charlotte-ui/utils@455828a",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@vercel/otel": "^2.3.0",
+    "deepslate": "^0.27.3",
+    "fflate": "^0.8.3",
+    "gl": "^8.1.6",
+    "gl-matrix": "^3.4.4",
+    "lucide-react": "^1.77.0",
+    "mcp-handler": "^2.4.0",
+    "next": "^16.4.6",
+    "pg": "^8.23.1",
+    "pngjs": "^7.0.0",
+    "quickjs-emscripten": "^0.32.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.5",
+    "@types/gl": "^6.0.5",
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "@types/pngjs": "^6.0.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "tailwindcss": "^4.3.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "allowScripts": {
+    "gl@8.1.6": true,
+    "esbuild@0.28.2": true
+  },
+  "overrides": {
+    "gl": {
+      "node-gyp": "13.1.0"
+    }
+  }
+}
