@@ -5,8 +5,26 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set a dedicated Tsumiki database URL}
       TSUMIKI_MCP_TOKEN: ${TSUMIKI_MCP_TOKEN:?Set a generated MCP bearer token}
-      TSUMIKI_BASE_URL: ${TSUMIKI_BASE_URL:-http://localhost:3000}
+      TSUMIKI_BASE_URL: ${TSUMIKI_BASE_URL:-https://${TSUMIKI_HOST:-tsumiki.panit.dev}}
       MINECRAFT_CLIENT_JAR: /assets/client.jar
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik
+      # The tunnel connects to Traefik over HTTP. CF-Visitor carries the edge scheme.
+      traefik.http.routers.tsumiki.rule: >-
+        Host(`${TSUMIKI_HOST:-tsumiki.panit.dev}`) && HeaderRegexp(`CF-Visitor`, `"scheme"[[:space:]]*:[[:space:]]*"https"`)
+      traefik.http.routers.tsumiki.entrypoints: web
+      traefik.http.routers.tsumiki.priority: "20"
+      traefik.http.routers.tsumiki.service: tsumiki
+      traefik.http.routers.tsumiki-redirect.rule: Host(`${TSUMIKI_HOST:-tsumiki.panit.dev}`)
+      traefik.http.routers.tsumiki-redirect.entrypoints: web
+      traefik.http.routers.tsumiki-redirect.priority: "10"
+      traefik.http.routers.tsumiki-redirect.service: noop@internal
+      traefik.http.routers.tsumiki-redirect.middlewares: tsumiki-https
+      traefik.http.middlewares.tsumiki-https.redirectregex.regex: ^http://[^/]+(.*)$
+      traefik.http.middlewares.tsumiki-https.redirectregex.replacement: https://${TSUMIKI_HOST:-tsumiki.panit.dev}$${1}
+      traefik.http.middlewares.tsumiki-https.redirectregex.permanent: "true"
+      traefik.http.services.tsumiki.loadbalancer.server.port: "3000"
     ports:
       - "127.0.0.1:${TSUMIKI_PORT:-3017}:3000"
     volumes:
@@ -20,7 +38,10 @@ services:
       start_period: 20s
     networks:
       - shared-internal
+      - traefik
 
 networks:
   shared-internal:
+    external: true
+  traefik:
     external: true

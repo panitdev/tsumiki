@@ -43,4 +43,4 @@ Install `ops/compose.yml` at `/opt/tsumiki/compose.yml`. Use a dedicated Postgre
 
 Set `DATABASE_URL` and a generated `TSUMIKI_MCP_TOKEN` in `/opt/tsumiki/.env`. Use `docker compose pull` and `docker compose up -d` from `/opt/tsumiki`. After the first image is published, add the entry from `ops/polling-target.txt` to the services array in `/opt/polling-deploy/poll.ts`. The existing systemd timer picks up future GHCR digests.
 
-Compose binds only to port 3017 on the host loopback. Use `ssh -N -L 3000:127.0.0.1:3017 panit` and the local URLs above. If the viewer URL uses a different origin, set `TSUMIKI_BASE_URL` to that origin.
+The existing Cloudflare Tunnel and Traefik network serve the viewer at [tsumiki.panit.dev](https://tsumiki.panit.dev). Configure MCP clients to use `https://tsumiki.panit.dev/api/mcp` with the deployment's bearer token. Compose uses the same HTTPS origin for generated links. Set `TSUMIKI_HOST` to use another hostname routed through the tunnel. The service remains reachable on host loopback port 3017 for diagnostics.
