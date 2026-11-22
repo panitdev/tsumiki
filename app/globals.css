@@ -43,15 +43,7 @@ body {
   letter-spacing: -0.04em;
 }
 
-.wordmark-icon {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  border-radius: var(--radius);
-  color: var(--primary-foreground);
-  background: var(--primary);
-}
+.wordmark img { display: block; }
 
 .structure-list-page {
   max-width: 880px;

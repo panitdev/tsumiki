@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /data && chown node:node /data
 COPY --from=build --chown=node:node /app/package*.json /app/next.config.ts /app/
+COPY --from=build --chown=node:node /app/public /app/public
 COPY --from=build --chown=node:node /app/.next /app/.next
 COPY --from=build --chown=node:node /app/node_modules /app/node_modules
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 LIBGL_ALWAYS_SOFTWARE=1 PORT=3000 TSUMIKI_WORKSPACE=/data

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 100 100" role="img" aria-labelledby="title desc">
+  <title id="title">Tsumiki</title>
+  <desc id="desc">Two offset blocks fit around a single stepped joint.</desc>
+  <path fill="#171717" d="M24 9H76Q86 9 86 19V30Q86 34 82 34H56Q47 34 47 43V49Q47 56 40 56H13Q8 56 8 51V25Q8 9 24 9Z"/>
+  <path fill="#171717" d="M27 91Q14 91 14 78V67Q14 63 18 63H43Q55 63 55 51V48Q55 41 62 41H88Q92 41 92 45V75Q92 91 76 91Z"/>
+</svg>
