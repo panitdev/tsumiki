@@ -6,6 +6,8 @@ import { runBuild, searchBlocks } from "../engine";
 import { renderContactSheet } from "../render/contact-sheet";
 import { importStructure, saveStructure, formats } from "./files";
 import { materials, readLayers } from "./read";
+import { authorizeMcpOAuth, mcpOAuthConfig, mcpOAuthConfigurationError, mcpWriteScope } from "./mcp-oauth";
+import { workspaceSelection } from "./workspace-access";
 import {
   activeStructure, blockEntries, buildStructure, listStructures, openStructure, snapshot,
   ToolError, undoStructure,
@@ -21,7 +23,7 @@ const box = z.tuple([coordinate, coordinate, coordinate, coordinate, coordinate,
 type Result = { ok: boolean; summary?: string; [key: string]: unknown };
 type ImageResult = { result: Result; png: Buffer };
 
-const requests = new AsyncLocalStorage<{ workspace: string; origin: string }>();
+const requests = new AsyncLocalStorage<{ workspace: string; origin: string; subject?: string; canWrite: boolean }>();
 function context() {
   const request = requests.getStore();
   if (!request) throw new Error("Request context is unavailable.");
@@ -39,9 +41,15 @@ function resultMessage(value: Result | ImageResult) {
   return { content, structuredContent: response, isError: !result.ok };
 }
 
-function tool<T>(action: (input: T) => Promise<Result | ImageResult> | Result | ImageResult) {
+function tool<T>(
+  action: (input: T) => Promise<Result | ImageResult> | Result | ImageResult,
+  writes?: true | ((input: T) => boolean),
+) {
   return async (input: T) => {
     try {
+      if ((writes === true || writes?.(input)) && !context().canWrite) {
+        throw new ToolError("This tool call requires mcp:write.", "Authorize the MCP client with the mcp:write scope.");
+      }
       return resultMessage(await action(input));
     } catch (error) {
       if (error instanceof ToolError) {
@@ -70,7 +78,7 @@ const handler = createMcpHandler((server) => {
     description: "Omit name to list existing structure names and viewer links. Supply a name to select or create a structure for this workspace, or import a workspace .schem, .litematic or .nbt.",
     inputSchema: z.object({ name: z.string().max(80).optional(), from: z.string().min(1).optional() }),
   }, tool(async ({ name, from }) => {
-    const { workspace, origin } = context();
+    const { workspace, origin, subject } = context();
     const viewerUrl = (structure: string) => new URL(`/${encodeURIComponent(structure)}`, origin).href;
     if (name === undefined) {
       if (from) throw new ToolError("An import needs a name.", "Supply a new structure name.");
@@ -80,12 +88,12 @@ const handler = createMcpHandler((server) => {
         structures: structures.map((info) => ({ ...info, viewerUrl: viewerUrl(info.name) })),
       };
     }
-    const { info, blocks } = await openStructure(name, workspace, from ? () => importStructure(from) : undefined);
+    const { info, blocks } = await openStructure(name, workspace, from ? () => importStructure(from, subject) : undefined);
     return {
       ok: true, summary: `Opened "${name}" with ${info.blockCount} blocks.`, ...info,
       materials: materials(blocks).slice(0, 10), viewerUrl: viewerUrl(name),
     };
-  }));
+  }, ({ name }) => name !== undefined));
 
   server.registerTool("build", {
     description: [
@@ -107,7 +115,7 @@ const handler = createMcpHandler((server) => {
       const image = look === false ? undefined : await render(blockEntries(updated), { views: [look] });
       return { result: image ? { result, png: image } : result, updated: { blocks: updated, changes } };
     });
-  }));
+  }, true));
 
   server.registerTool("look", {
     description: "Render one PNG contact sheet of up to four views. Supply box or cut_y to reveal part of the structure.",
@@ -154,19 +162,19 @@ const handler = createMcpHandler((server) => {
   }, tool(async ({ steps }) => {
     const info = await undoStructure(await activeStructure(context().workspace), steps);
     return { ok: true, summary: `Undid ${steps} build step${steps === 1 ? "" : "s"} in "${info.name}".`, ...info };
-  }));
+  }, true));
 
   server.registerTool("save", {
     description: "Export the active structure to the workspace and get a download URL and material list. Paths must be within the workspace.",
     inputSchema: z.object({ format: z.enum(formats).default("schem"), path: z.string().min(1).optional(), version: z.string().default("26.3") }),
   }, tool(async ({ format, path, version }) => {
     const { info, blocks } = await snapshot(await activeStructure(context().workspace));
-    const save = await saveStructure(info, blocks, { format, path, version });
+    const save = await saveStructure(info, blocks, { format, path, version }, context().subject);
     return {
       ok: true, summary: `Saved "${info.name}" as ${format} for Minecraft ${version}.`, ...save,
       downloadUrl: new URL(save.downloadUrl, context().origin).href,
     };
-  }));
+  }, true));
 }, {
   serverInfo: { name: "Tsumiki", version: "0.1.0" },
   instructions: "Call open with no arguments to discover existing structure names and viewer links. Call open with the exact name before building, inspecting, or saving it. A new name creates a structure. Share its viewerUrl with the user. Coordinates are x east, y up, z south. Use build with look:false to skip the default iso_se PNG.",
@@ -178,12 +186,27 @@ function hash(value: string) {
 }
 
 export async function handleMcp(request: Request) {
-  const auth = request.headers.get("Authorization");
-  const token = process.env.TSUMIKI_MCP_TOKEN;
-  if (token && (!auth || !timingSafeEqual(hash(auth), hash(`Bearer ${token}`)))) {
-    return Response.json({ error: "Tsumiki MCP authorization required." }, {
-      status: 401, headers: { "WWW-Authenticate": "Bearer" },
-    });
+  let oauth: ReturnType<typeof mcpOAuthConfig>;
+  try {
+    oauth = mcpOAuthConfig();
+  } catch {
+    return mcpOAuthConfigurationError();
+  }
+  let subject: string | undefined;
+  let canWrite = true;
+  if (oauth) {
+    const authorization = await authorizeMcpOAuth(request, oauth);
+    if (authorization instanceof Response) return authorization;
+    subject = authorization.subject;
+    canWrite = authorization.scopes.has(mcpWriteScope);
+  } else {
+    const auth = request.headers.get("Authorization");
+    const token = process.env.TSUMIKI_MCP_TOKEN;
+    if (token && (!auth || !timingSafeEqual(hash(auth), hash(`Bearer ${token}`)))) {
+      return Response.json({ error: "Tsumiki MCP authorization required." }, {
+        status: 401, headers: { "WWW-Authenticate": "Bearer" },
+      });
+    }
   }
   const workspace = request.headers.get("X-Tsumiki-Workspace") ?? "default";
   if (!/^[a-zA-Z0-9._-]{1,80}$/.test(workspace)) {
@@ -191,7 +214,7 @@ export async function handleMcp(request: Request) {
   }
   // Local unauthenticated mode is for direct MCP clients. A foreign browser
   // origin must not be able to drive that local endpoint.
-  const origin = process.env.TSUMIKI_BASE_URL ?? new URL(request.url).origin;
+  const origin = oauth?.resource.origin ?? process.env.TSUMIKI_BASE_URL ?? new URL(request.url).origin;
   const source = request.headers.get("Origin");
   if (source && source !== new URL(origin).origin) {
     return Response.json({ error: "Cross-origin MCP requests are not allowed." }, { status: 403 });
@@ -199,5 +222,5 @@ export async function handleMcp(request: Request) {
   if (request.method === "POST" && !request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
     return Response.json({ error: "Expected application/json." }, { status: 415 });
   }
-  return requests.run({ workspace, origin }, () => handler(request));
+  return requests.run({ workspace: workspaceSelection(workspace, subject), origin, subject, canWrite }, () => handler(request));
 }
