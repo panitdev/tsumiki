@@ -4,7 +4,7 @@ import { Button } from "@charlotte-ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@charlotte-ui/dialog";
 import { useState } from "react";
 
-export function AgentConnection() {
+export function AgentConnection({ oauth = false }: { oauth?: boolean }) {
   const [endpoint, setEndpoint] = useState("");
 
   return (
@@ -23,8 +23,8 @@ export function AgentConnection() {
             <dd><code>{endpoint}</code></dd>
           </div>
           <div>
-            <dt>Authorization header (when required)</dt>
-            <dd><code>Bearer &lt;your deployment token&gt;</code></dd>
+            <dt>Authorization</dt>
+            <dd>{oauth ? "Sign in with Surge when your MCP client prompts you." : <code>Bearer &lt;your deployment token&gt; (when required)</code>}</dd>
           </div>
           <div>
             <dt>Find a structure</dt>
