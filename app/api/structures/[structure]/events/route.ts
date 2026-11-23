@@ -1,8 +1,10 @@
 import { changeEvents, getStructureInfo, ToolError, validateName } from "@/src/server/store";
+import { viewerAccess, viewerUnauthorized } from "@/src/server/viewer-access";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request, { params }: { params: Promise<{ structure: string }> }) {
+  if (!(await viewerAccess()).allowed) return viewerUnauthorized();
   const { structure } = await params;
   let initial: number;
   try {
@@ -44,7 +46,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ stru
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
+      "Cache-Control": "private, no-store, no-transform",
       "X-Accel-Buffering": "no",
     },
   });

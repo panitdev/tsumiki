@@ -1,7 +1,11 @@
+import { requireViewerPage } from "../src/server/viewer-access";
 import { StructureList } from "../src/viewer/structure-list";
 import { SiteHeader } from "../src/viewer/site-header";
 
-export default function HomePage() {
+export const dynamic = "force-dynamic";
+
+export default async function HomePage() {
+  await requireViewerPage("/");
   return (
     <>
       <SiteHeader />

@@ -1,8 +1,10 @@
 import { blockEntries, snapshot, ToolError, validateName } from "@/src/server/store";
+import { viewerAccess, viewerUnauthorized } from "@/src/server/viewer-access";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request, { params }: { params: Promise<{ structure: string }> }) {
+  if (!(await viewerAccess()).allowed) return viewerUnauthorized();
   try {
     const { structure } = await params;
     const undo = Number(new URL(request.url).searchParams.get("undo") ?? 0);

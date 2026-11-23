@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
+import { requireViewerPage } from "../../src/server/viewer-access";
 import { SiteHeader } from "../../src/viewer/site-header";
 import { StructureViewer } from "../../src/viewer/structure-viewer";
+
+export const dynamic = "force-dynamic";
 
 type StructurePageProps = { params: Promise<{ structure: string }> };
 
@@ -20,6 +23,7 @@ export async function generateMetadata({ params }: StructurePageProps): Promise<
 export default async function StructurePage({ params }: StructurePageProps) {
   const { structure } = await params;
   const name = structureName(structure);
+  await requireViewerPage(`/${encodeURIComponent(name)}`);
   return (
     <>
       <SiteHeader />

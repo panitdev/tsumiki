@@ -6,37 +6,49 @@ import { blockEntries, ToolError, type StructureInfo } from "./store";
 import { readNbt, writeNbt } from "./formats/nbt";
 import { materialList } from "./formats/materials";
 import { targetCatalog } from "./formats/version";
+import { workspaceDirectory } from "./workspace-access";
 
 export const formats = ["schem", "litematic", "nbt", "mcfunction"] as const;
 type Format = typeof formats[number];
 const artifacts = ".tsumiki-downloads";
+const users = ".tsumiki-users";
 
 function inside(base: string, path: string) {
   const rel = relative(base, path);
   return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
-async function workspace() {
+async function workspace(subject?: string) {
   const base = resolve(/* turbopackIgnore: true */ process.env.TSUMIKI_WORKSPACE ?? "workspace");
   await mkdir(base, { recursive: true });
-  return realpath(/* turbopackIgnore: true */ base);
+  const root = await realpath(/* turbopackIgnore: true */ base);
+  if (subject === undefined) return root;
+  const parent = join(root, users);
+  const directory = join(parent, workspaceDirectory(subject));
+  for (const path of [parent, directory]) {
+    await mkdir(path, { recursive: true, mode: 0o700 });
+    if (await realpath(path) !== path) {
+      throw new ToolError("The workspace directory is invalid.", "Check the configured Tsumiki workspace directories.");
+    }
+  }
+  return directory;
 }
 
 function userPath(base: string, path: string) {
   const candidate = resolve(base, path);
-  if (!inside(base, candidate) || inside(join(base, artifacts), candidate)) {
+  if (!inside(base, candidate) || inside(join(base, artifacts), candidate) || inside(join(base, users), candidate)) {
     throw new ToolError("The file path is outside the workspace.", "Use a path inside the configured Tsumiki workspace.");
   }
   return candidate;
 }
 
-export async function importStructure(path: string): Promise<Blocks> {
+export async function importStructure(path: string, subject?: string): Promise<Blocks> {
   const ext = extname(path).toLowerCase().slice(1);
   if (ext !== "schem" && ext !== "litematic" && ext !== "nbt") {
     throw new ToolError("Unsupported import format.", "Use a .schem, .litematic or .nbt file.");
   }
   try {
-    const base = await workspace();
+    const base = await workspace(subject);
     const target = userPath(base, await realpath(userPath(base, path)));
     const info = await stat(target);
     if (!info.isFile() || info.size > 64 * 1024 * 1024) {
@@ -50,7 +62,7 @@ export async function importStructure(path: string): Promise<Blocks> {
 }
 
 export async function saveStructure(info: StructureInfo, blocks: ReadonlyMap<string, string>,
-    { format, path, version }: { format: Format; path?: string; version: string }) {
+    { format, path, version }: { format: Format; path?: string; version: string }, subject?: string) {
   const target = await targetCatalog(version);
   const palette = ["minecraft:air"];
   const paletteIndices = new Map(palette.map((state, i) => [state, i]));
@@ -82,7 +94,7 @@ export async function saveStructure(info: StructureInfo, blocks: ReadonlyMap<str
   const bytes = format === "mcfunction" ? Buffer.from(
     cells.map(({ x, y, z, state }) => `setblock ~${x - ox} ~${y - oy} ~${z - oz} ${palette[state]}${strict}`).join("\n") + "\n",
   ) : writeNbt(format, info.name, target.dataVersion, info.bounds, palette, cells);
-  const base = await workspace();
+  const base = await workspace(subject);
   const defaultName = info.name.replace(/[<>:"|?*]/g, "_") + `.${format}`;
   let filepath = userPath(base, path ?? defaultName);
   if (path) {
@@ -117,9 +129,9 @@ export async function saveStructure(info: StructureInfo, blocks: ReadonlyMap<str
   return { path: filepath, downloadUrl: `/api/downloads/${id}`, format, version, materials, unplaceable, substitutions: [...substitutions.values()] };
 }
 
-export async function download(id: string) {
+export async function download(id: string, subject?: string) {
   if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id)) return;
-  const directory = join(await workspace(), artifacts, id);
+  const directory = join(await workspace(subject), artifacts, id);
   try {
     const [name] = await readdir(directory);
     if (name) return { name, bytes: await readFile(join(directory, name)) };
