@@ -33,17 +33,23 @@ body {
 .agent-connection dd { color: var(--muted-foreground); line-height: 1.55; overflow-wrap: anywhere; }
 .agent-connection code { color: var(--foreground); }
 
-.wordmark {
+.brandmark {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  vertical-align: middle;
+  gap: 8px;
   color: var(--foreground);
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: -0.04em;
 }
 
-.wordmark img { display: block; }
+.brandmark img { display: block; }
+
+.wordmark {
+  font-family: "Lexend Variable", var(--font-sans);
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
 
 .structure-list-page {
   max-width: 880px;
