@@ -27,7 +27,7 @@ async function workspace(subject?: string) {
   const directory = join(parent, workspaceDirectory(subject));
   for (const path of [parent, directory]) {
     await mkdir(path, { recursive: true, mode: 0o700 });
-    if (await realpath(path) !== path) {
+    if (await realpath(/* turbopackIgnore: true */ path) !== path) {
       throw new ToolError("The workspace directory is invalid.", "Check the configured Tsumiki workspace directories.");
     }
   }
