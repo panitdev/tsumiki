@@ -68,6 +68,7 @@ test("browser OAuth signs in only after state, PKCE and ID token validation", as
       case `${issuer}/oauth2/token`:
         assert.equal(init?.method, "POST");
         exchange = init.body as URLSearchParams;
+        assert.equal(exchange.has("resource"), false);
         return Response.json({ id_token: token });
       case `${issuer}/oauth2/jwks.json`:
         return Response.json({ keys: [jwk] });
@@ -82,7 +83,7 @@ test("browser OAuth signs in only after state, PKCE and ID token validation", as
   assert.equal(`${authorize.origin}${authorize.pathname}`, `${issuer}/oauth2/authorize`);
   assert.equal(authorize.searchParams.get("client_id"), clientId);
   assert.equal(authorize.searchParams.get("redirect_uri"), callback);
-  assert.equal(authorize.searchParams.get("resource"), resource);
+  assert.equal(authorize.searchParams.has("resource"), false);
   assert.equal(authorize.searchParams.get("scope"), "openid");
   assert.equal(authorize.searchParams.get("code_challenge_method"), "S256");
   const nonce = authorize.searchParams.get("nonce")!;

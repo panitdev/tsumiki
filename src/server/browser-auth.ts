@@ -25,24 +25,21 @@ export function browserAuthEnabled() {
 
 function config() {
   const {
-    TSUMIKI_OAUTH_RESOURCE: resource,
     TSUMIKI_OAUTH_CLIENT_ID: clientId,
     TSUMIKI_OAUTH_CLIENT_SECRET: clientSecret,
     TSUMIKI_BASE_URL: baseUrl,
     TSUMIKI_SESSION_SECRET: secret,
   } = process.env;
   const issuer = surgeIssuerConfig();
-  if (!issuer || !resource || !clientId || !baseUrl || !secret || !/^[a-f0-9]{64}$/i.test(secret)) {
+  if (!issuer || !clientId || !baseUrl || !secret || !/^[a-f0-9]{64}$/i.test(secret)) {
     throw new Error("Browser OAuth configuration is incomplete");
   }
 
-  parsePublicUrl(resource);
   const { origin, protocol } = parsePublicUrl(baseUrl);
   const secure = protocol === "https:";
   const prefix = secure ? "__Host-" : "";
   return {
     issuer,
-    resource,
     clientId,
     clientSecret,
     origin,
@@ -131,7 +128,6 @@ export async function beginBrowserLogin(request: NextRequest) {
       response_type: "code",
       client_id: settings.clientId,
       redirect_uri: settings.redirectUri,
-      resource: settings.resource,
       scope: "openid",
       state,
       nonce,
@@ -194,7 +190,6 @@ export async function completeBrowserLogin(request: NextRequest) {
       code,
       client_id: settings.clientId,
       redirect_uri: settings.redirectUri,
-      resource: settings.resource,
       code_verifier: verifier,
     });
     if (settings.clientSecret) body.set("client_secret", settings.clientSecret);
