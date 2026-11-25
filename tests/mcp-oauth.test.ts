@@ -86,6 +86,7 @@ test("MCP verifies Surge ES256 access tokens and challenges for missing scopes",
       default: throw new Error("Unexpected OAuth endpoint.");
     }
   });
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
   const now = Math.floor(Date.now() / 1000);
   const sign = (overrides = {}, typ = "at+jwt", signingKey = privateKey) =>
     new SignJWT({ ...claims, iss: issuer, iat: now - 10, exp: now + 60, ...overrides })
