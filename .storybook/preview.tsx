@@ -1,8 +1,16 @@
 import type { Preview } from '@storybook/nextjs-vite'
 import '../app/globals.css'
 import '@fontsource-variable/lexend'
+import { startMocking } from '../src/mocks/worker'
 
 const preview: Preview = {
+  async beforeAll() {
+    // Mock the app's API layer with MSW. Set ?msw-off=1 to use real network
+    // calls when running against a live server.
+    if (!new URLSearchParams(window.location.search).has('msw-off')) {
+      await startMocking()
+    }
+  },
   parameters: {
     controls: {
       matchers: {

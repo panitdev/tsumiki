@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { AmbientBackground } from "@charlotte-ui/labs/ambient-background";
+import { MockGate } from "../src/mocks/boot";
 import "@fontsource-variable/geist-mono";
 import "./globals.css";
 
@@ -20,7 +21,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en">
       <body>
         <AmbientBackground className="site-background" />
-        {children}
+        <MockGate>
+          {children}
+        </MockGate>
       </body>
     </html>
   );
