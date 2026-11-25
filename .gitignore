@@ -7,3 +7,6 @@ next-env.d.ts
 workspace/
 *.jar
 .beads.gate.lock
+
+*storybook.log
+storybook-static

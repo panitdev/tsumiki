@@ -11,7 +11,9 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build"
   },
   "dependencies": {
     "@charlotte-ui/button": "https://pkg.pr.new/panitdev/charlotte/@charlotte-ui/button@455828a",
@@ -50,7 +52,19 @@
     "@types/react-dom": "^19.3.0",
     "tailwindcss": "^4.3.5",
     "tsx": "^4.23.15",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "storybook": "^10.6.9",
+    "@storybook/nextjs-vite": "^10.6.9",
+    "@chromatic-com/storybook": "latest",
+    "@storybook/addon-vitest": "^10.6.9",
+    "@storybook/addon-a11y": "^10.6.9",
+    "@storybook/addon-docs": "^10.6.9",
+    "@storybook/addon-mcp": "^10.6.9",
+    "vite": "latest",
+    "vitest": "latest",
+    "@vitest/browser-playwright": "latest",
+    "@vitest/coverage-v8": "latest",
+    "playwright": "latest"
   },
   "allowScripts": {
     "gl@8.1.6": true,
