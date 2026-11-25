@@ -46,10 +46,10 @@ test("browser OAuth signs in only after state, PKCE and ID token validation", as
 
   const login = new NextRequest(`${origin}/auth/login?returnTo=%2Fcastle%3Fversion%3D2`);
   assert.equal(browserAuthEnabled(), false);
-  assert.equal((await beginBrowserLogin(login)).status, 404);
+  assert.equal((await beginBrowserLogin(login)).headers.get("location"), "/auth/error?reason=disabled");
   process.env.TSUMIKI_OAUTH_ISSUER = "";
   assert.equal(browserAuthEnabled(), true);
-  assert.equal((await beginBrowserLogin(login)).status, 503);
+  assert.equal((await beginBrowserLogin(login)).headers.get("location"), "/auth/error?reason=unavailable");
   Object.assign(process.env, env);
 
   const { privateKey, publicKey } = await generateKeyPair("ES256");
@@ -98,7 +98,28 @@ test("browser OAuth signs in only after state, PKCE and ID token validation", as
     });
   }
 
-  assert.equal((await completeBrowserLogin(callbackRequest("unexpected-state"))).status, 400);
+  assert.equal(
+    (await completeBrowserLogin(callbackRequest("unexpected-state"))).headers.get("location"),
+    "/auth/error?reason=invalid_flow",
+  );
+  for (const [query, reason] of [
+    [`error=invalid_target&error_description=private-provider-details&state=${state}`, "invalid_target"],
+    [`error=access_denied&state=${state}`, "access_denied"],
+    [`error=temporarily_unavailable&state=${state}`, "unavailable"],
+    [`error=unknown-provider-code&state=${state}`, "failed"],
+    ["error=invalid_target&state=unexpected-state", "invalid_flow"],
+    [`error=invalid_target&code=unexpected-code&state=${state}`, "invalid_flow"],
+  ]) {
+    const rejected = await completeBrowserLogin(new NextRequest(`${callback}?${query}`, {
+      headers: { cookie: `${flowCookie}=${flow.value}` },
+    }));
+    assert.equal(rejected.status, 303);
+    assert.equal(rejected.headers.get("location"), `/auth/error?reason=${reason}`);
+    assert.equal(rejected.headers.get("cache-control"), "no-store");
+    assert.equal(rejected.headers.get("referrer-policy"), "no-referrer");
+    assert.equal(rejected.cookies.get(flowCookie)?.maxAge, 0);
+    assert.equal(rejected.cookies.get(sessionCookie), undefined);
+  }
   assert.equal(exchange, undefined);
 
   function issueIdentity(audience: string, tokenNonce: string, type = "JWT", subject = identity.toUpperCase()) {
@@ -120,7 +141,7 @@ test("browser OAuth signs in only after state, PKCE and ID token validation", as
   ]) {
     token = invalidToken;
     const rejected = await completeBrowserLogin(callbackRequest(state));
-    assert.equal(rejected.status, 400);
+    assert.equal(rejected.headers.get("location"), "/auth/error?reason=failed");
     assert.equal(rejected.cookies.get(sessionCookie), undefined);
   }
 

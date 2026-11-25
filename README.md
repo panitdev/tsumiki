@@ -65,6 +65,8 @@ surge-server oauth client create --name 'Tsumiki MCP' \
 
 The viewer requests `openid` for browser sign-in. Configure the MCP client with its own client ID and the `https://tsumiki.panit.dev/api/mcp` endpoint. Request `mcp:read` for inspection and add `mcp:write` for selecting or creating a named structure, building, undoing, or exporting.
 
+If browser sign-in fails with Surge’s `invalid_target` error, verify that `TSUMIKI_OAUTH_CLIENT_ID` identifies the viewer registration and that Surge permits that client to request the exact URI configured in `TSUMIKI_OAUTH_RESOURCE`. Check the viewer client’s resource policy before retrying sign-in.
+
 Set these values in Tsumiki's environment with the IDs and secret from the registrations. Generate the session secret with `openssl rand -hex 32` and keep it stable across restarts. Omit unused variables entirely, including the static bearer token in OAuth mode.
 
 ```dotenv

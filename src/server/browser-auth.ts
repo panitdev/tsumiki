@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { jwtVerify, SignJWT } from "jose";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
+import type { SignInFailure } from "./sign-in-failure";
 import { fetchSurgeJson, loadSurgeMetadata, parsePublicUrl, surgeIssuerConfig, verifySurgeJwt } from "./surge-oauth";
 
 const flowLifetime = 10 * 60;
@@ -108,8 +109,15 @@ function failure(message: string, status: number) {
   return new NextResponse(message, { status, headers: privateHeaders });
 }
 
+function signInFailure(reason: SignInFailure) {
+  return new NextResponse(null, {
+    status: 303,
+    headers: { ...privateHeaders, Location: `/auth/error?reason=${reason}` },
+  });
+}
+
 export async function beginBrowserLogin(request: NextRequest) {
-  if (!browserAuthEnabled()) return failure("Sign-in is disabled.", 404);
+  if (!browserAuthEnabled()) return signInFailure("disabled");
   try {
     const settings = config();
     const metadata = await loadSurgeMetadata(settings.issuer);
@@ -136,34 +144,50 @@ export async function beginBrowserLogin(request: NextRequest) {
     response.cookies.set(settings.flowCookie, flow, { ...settings.cookieOptions, maxAge: flowLifetime });
     return response;
   } catch {
-    return failure("Sign-in is temporarily unavailable.", 503);
+    return signInFailure("unavailable");
   }
 }
 
 export async function completeBrowserLogin(request: NextRequest) {
-  if (!browserAuthEnabled()) return failure("Sign-in is disabled.", 404);
+  if (!browserAuthEnabled()) return signInFailure("disabled");
   let settings: BrowserConfig;
   try {
     settings = config();
   } catch {
-    return failure("Sign-in is temporarily unavailable.", 503);
+    return signInFailure("unavailable");
   }
 
   const { searchParams } = request.nextUrl;
   const cookie = request.cookies.get(settings.flowCookie)?.value;
-  let response: NextResponse;
+  function finish(response: NextResponse) {
+    response.cookies.set(settings.flowCookie, "", { ...settings.cookieOptions, maxAge: 0 });
+    return response;
+  }
+
+  let reason: SignInFailure = "invalid_flow";
   try {
-    const code = searchParams.get("code");
-    if (!cookie || !code || searchParams.has("error") ||
-        searchParams.getAll("state").length !== 1 || searchParams.getAll("code").length !== 1) {
-      throw new Error("Invalid authorization response");
-    }
+    if (!cookie || searchParams.getAll("state").length !== 1) return finish(signInFailure(reason));
     const { state, nonce, verifier, returnTo } = await unseal(settings, cookie, flowType);
     if (typeof state !== "string" || state !== searchParams.get("state") ||
         typeof nonce !== "string" || typeof verifier !== "string" || typeof returnTo !== "string") {
-      throw new Error("Invalid authorization state");
+      return finish(signInFailure(reason));
     }
 
+    const errors = searchParams.getAll("error");
+    const codes = searchParams.getAll("code");
+    if (errors.length === 1 && codes.length === 0) {
+      switch (errors[0]) {
+        case "invalid_target": return finish(signInFailure("invalid_target"));
+        case "access_denied": return finish(signInFailure("access_denied"));
+        case "server_error":
+        case "temporarily_unavailable": return finish(signInFailure("unavailable"));
+        default: return finish(signInFailure("failed"));
+      }
+    }
+    const [code] = codes;
+    if (errors.length || codes.length !== 1 || !code) return finish(signInFailure(reason));
+
+    reason = "failed";
     const metadata = await loadSurgeMetadata(settings.issuer);
     const body = new URLSearchParams({
       grant_type: "authorization_code",
@@ -196,13 +220,12 @@ export async function completeBrowserLogin(request: NextRequest) {
       sub: payload.sub.toLowerCase(),
       clientId: settings.clientId,
     }, sessionType, sessionLifetime);
-    response = redirect(new URL(safeReturnTo(returnTo, settings.origin), settings.origin));
+    const response = redirect(new URL(safeReturnTo(returnTo, settings.origin), settings.origin));
     response.cookies.set(settings.sessionCookie, session, { ...settings.cookieOptions, maxAge: sessionLifetime });
+    return finish(response);
   } catch {
-    response = failure("Sign-in failed. Return to Tsumiki and try again.", 400);
+    return finish(signInFailure(reason));
   }
-  response.cookies.set(settings.flowCookie, "", { ...settings.cookieOptions, maxAge: 0 });
-  return response;
 }
 
 export function endBrowserSession(request: NextRequest) {
