@@ -1,5 +1,6 @@
 import source from "../../../data/placement-items.json";
-import { blockKey, getBlockDefaults, isAir, type Position } from "../../engine";
+import { getBlockDefaults, isAir } from "../../engine/catalog";
+import type { Position } from "../../engine/geometry";
 
 const aliases: Readonly<Record<string, string | null>> = source.aliases;
 const stackSizes: Readonly<Record<string, number>> = source.stackSizes;
@@ -56,7 +57,7 @@ export function materialList(palette: readonly string[], cells: Iterable<Cell>) 
       continue;
     }
     if (anchor) {
-      const key = `${block}:${blockKey(x + anchor[0], y + anchor[1], z + anchor[2])}`;
+      const key = `${block}:${x + anchor[0]},${y + anchor[1]},${z + anchor[2]}`;
       if (paired.has(key)) continue;
       paired.add(key);
     }

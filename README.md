@@ -1,6 +1,8 @@
 # Tsumiki
 
-Tsumiki is a TypeScript MCP server for building Minecraft Java Edition structures. Agents run short QuickJS scripts and inspect rendered PNGs or text grids. Humans can follow the same structure in a read-only browser viewer.
+Tsumiki is a TypeScript MCP server for building Minecraft Java Edition structures. Each project is one JavaScript file, `/project/build.js`. Agents edit it in a sandboxed shell, Tsumiki rebuilds it from scratch after every change, and agents render the result to PNG. Humans follow along in a read-only browser viewer.
+
+> **Upgrading from the earlier release deletes its data.** The block-map storage behind the `build`, `look`, `read` and `blocks` tools cannot be expressed as a `build.js`. On its first database request this release runs `DROP TABLE` on `tsumiki_structures`, `tsumiki_chunks`, `tsumiki_history` and `tsumiki_workspaces`, which permanently removes every existing structure and its history. Export anything you need with the earlier release, or back up the database, before deploying. Pushing to `main` publishes the image that panit deploys automatically.
 
 ## Local setup
 
@@ -21,19 +23,60 @@ Add the Streamable HTTP endpoint to Claude Code.
 claude mcp add --transport http tsumiki http://localhost:3000/api/mcp
 ```
 
-Set `TSUMIKI_MCP_TOKEN` in the server environment to require `Authorization: Bearer <token>` on the endpoint. Set the optional `X-Tsumiki-Workspace` header to give each MCP client its own active structure selection. Without that header, clients share the default selection. Named structures are shared across workspaces and their build history persists in Postgres.
+Set `TSUMIKI_MCP_TOKEN` in the server environment to require `Authorization: Bearer <token>` on the endpoint. Set the optional `X-Tsumiki-Workspace` header to give each MCP client its own active project selection. Without that header, clients share the default selection. Projects are shared across workspaces, and their files, revisions and last good build persist in Postgres.
 
-Call `open({})` to discover existing names and viewer links. Call `open({name})` to select a structure for the current workspace or create it if the name is new. `build` runs a script, `look` or `read` inspects the structure, and `save` exports it. `blocks` searches the Java 26.3 catalog, and `undo` rolls back whole build calls. Build counts represent net coordinate changes. Changing an existing non-air state counts as one placement. The returned PNG is MCP image content. Set `look:false` to skip it.
+## Tools
 
-```js
-fill([0, 0, 0, 8, 0, 8], 'stone_bricks*6,mossy_stone_bricks*2')
-fill([2, 1, 2, 6, 4, 6], 'white_concrete')
-fill([3, 1, 3, 5, 4, 5], 'air')
-set(4, 1, 2, 'iron_door[facing=north,half=lower]')
-set(4, 2, 2, 'iron_door[facing=north,half=upper]')
+| Tool | Purpose |
+| --- | --- |
+| `open` | Without a name, list projects and viewer links. With a name, switch to a project or create it. `reset: true` empties `build.js`. |
+| `bash` | A [bashkit](https://bashkit.sh) shell over the project's virtual filesystem. A call that changes `build.js` triggers a build, and the report is appended to the output. |
+| `render` | One PNG of the last good build from `camera: {from, at}`. `hide` takes a selector. `section: [[x1,y1,z1],[x2,y2,z2]]` shows only that inclusive box of cells. |
+| `undo` | Restore `build.js` from before the last changing call, or several with `steps`, then rebuild. |
+| `save` | Export the last good build to the workspace as `.schem`, `.litematic`, `.nbt` or `.mcfunction`. |
+
+A failed build keeps your edit, while `render`, the viewer and exports continue to use the last good build. The `bash` tool description carries the full script reference; [src/server/mcp-guide.ts](src/server/mcp-guide.ts) is its source.
+
+```sh
+cat > /project/build.js <<'EOF'
+model("lamp", [{ block: "lantern", at: [0.5, 0.5, 0.5], scale: 1.5 }], { tags: ["light"] })
+
+function house([x, y, z]) {
+  group("Walls", () => fill([x, y, z], [x + 6, y + 4, z + 6], "oak_planks"))
+  group("Interior", () => fill([x + 1, y + 1, z + 1], [x + 5, y + 4, z + 5], "air"))
+  group("Door", () => fill([x + 3, y + 1, z], [x + 3, y + 2, z], "air"))
+}
+
+group("Village", () => house([0, 0, 0]))
+group("Street", () => use("lamp", { at: [3, 6, -3] }))
+log(select("Village Walls"))
+EOF
 ```
 
-Import files and export destinations are confined to `TSUMIKI_WORKSPACE` (default `workspace/`). The formats cover block states. Block entities, item inventories and entities are omitted. The default export targets 26.3. Older Java versions from 1.13 onward use versioned block data over HTTPS and report block ID substitutions. The exporter uses [mcmeta](https://github.com/misode/mcmeta) with a pinned [PrismarineJS catalog](https://github.com/PrismarineJS/minecraft-data) for releases without reports. Material lists count placement items using the 26.3 stack sizes and report technical blocks separately. Export downloads use unique URLs.
+The script API is `set`, `fill(from, to, block)`, `get`, `turn(block, quarterTurns)`, `rand`, `log`, `group`, `model`, `use` and `select`. Conventions that matter:
+
+- A positive `rotate` angle is clockwise seen from the positive end of its axis, applied about X, then Y, then Z. `[0,90,0]` turns the same way as `turn(block, 1)`.
+- A block display is centred on its `at` and scales in both directions from there.
+- `rand()` and generated instance ids depend only on their group, so editing one group does not reshuffle another.
+- Replacing another group's block with a non-air block produces a warning. Carving with air does not.
+- `(0,0,0)` is the paste point. Structure `.nbt` files cannot store a paste offset, so `save` reports where their minimum corner goes. Block displays export as `block_display` entities and are omitted for releases before 1.19.4.
+
+### Limits
+
+| What | Limit |
+| --- | --- |
+| Build | 10 s, 2,000,000 block writes, 64 MiB of script memory, 8,192 partly filled 16³ sections |
+| Source | `build.js` up to 256 KiB |
+| Models | 20,000 block parts and 10,000 instances per build |
+| Shell call | 10 s, 10,000 commands, 10,000 iterations per loop and 100,000 in total |
+| Shell output | bashkit's `Hardened` preset, then trimmed to 30,000 characters |
+| Stored project | 64 files and 1 MiB under `/project`. A call that exceeds this saves none of its file changes. |
+
+bashkit 0.22.0's JavaScript wrapper cannot set an exact output limit and offers no filesystem limit settings. Its fixed 10 MB per file and 100 MB total apply while a command runs; the stored-project limit above is Tsumiki's own. Each call starts a new shell, so only files under `/project` carry over.
+
+Builds run synchronously in the server process. A slow script delays other requests for up to 10 seconds.
+
+The viewer shows the group tree with hide, isolate and select, draws block displays, slices by Y, and downloads any export format. Material lists count placement items for grid blocks using the 26.3 stack sizes and report technical blocks separately. `save` destinations are confined to `TSUMIKI_WORKSPACE` (default `workspace/`) and its download URLs are unique. Block entities and item inventories are not exported. The default export targets 26.3. Older Java versions from 1.13 onward use versioned block data over HTTPS and report block ID substitutions. The exporter uses [mcmeta](https://github.com/misode/mcmeta) with a pinned [PrismarineJS catalog](https://github.com/PrismarineJS/minecraft-data) for releases without reports.
 
 ## Deployment on panit
 
@@ -90,10 +133,10 @@ curl -i https://tsumiki.panit.dev/api/mcp
 curl -fsS https://tsumiki.panit.dev/.well-known/oauth-protected-resource/api/mcp
 ```
 
-In a browser, open the viewer, sign in through Surge, and confirm that the structure list loads. Sign out and try opening a structure again. In the MCP client, complete authorization and call `open({})` to list structures. With both scopes, select a structure and try `save`. Open the returned download URL in a browser signed in to the same Surge account.
+In a browser, open the viewer, sign in through Surge, and confirm that the structure list loads. Sign out and try opening a structure again. In the MCP client, complete authorization and call `open({})` to list projects. With both scopes, open a project and try `save`. Open the returned download URL in a browser signed in to the same Surge account.
 
 ### Move workspace files from a static-token deployment
 
-Structures and build history already in Postgres are shared across signed-in users, subject to the MCP client's scopes. Each Surge account has its own active structure selection for each `X-Tsumiki-Workspace` value. Reselect an existing structure by name on the first connection.
+Projects in Postgres are shared across signed-in users, subject to the MCP client's scopes. Each Surge account has its own active project selection for each `X-Tsumiki-Workspace` value. Reopen a project by name on the first connection.
 
-With OAuth, import and export paths are relative to `TSUMIKI_WORKSPACE/.tsumiki-users/<sha256>`, where `<sha256>` is the SHA-256 hex digest of the lowercase Surge subject UUID. On panit this is under `/opt/tsumiki/workspace/.tsumiki-users`. To reuse an existing import or exported file, copy it from the old workspace into the owning account's directory. Keep the directory and files accessible to container UID 1000. Regenerate old download links with `save` under the intended account.
+With OAuth, `save` paths are relative to `TSUMIKI_WORKSPACE/.tsumiki-users/<sha256>`, where `<sha256>` is the SHA-256 hex digest of the lowercase Surge subject UUID. On panit this is under `/opt/tsumiki/workspace/.tsumiki-users`. To reuse an exported file, copy it from the old workspace into the owning account's directory. Keep the directory and files accessible to container UID 1000. Regenerate old download links with `save` under the intended account.

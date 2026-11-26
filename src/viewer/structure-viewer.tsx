@@ -2,26 +2,49 @@
 
 import { Button } from "@charlotte-ui/button";
 import { Card } from "@charlotte-ui/card";
-import { ChevronLeft, History, Layers3, LoaderCircle, MousePointer2 } from "lucide-react";
+import { ChevronLeft, Download, Layers3, ListTree, MousePointer2 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useDeferredValue, useEffect, useState } from "react";
+import { useCallback, useDeferredValue, useMemo, useState } from "react";
+import { sceneBounds, groupPath, ROOT_LABEL, type SceneData } from "../engine/scene";
 import { formatDimensions, numberFormat, structurePath } from "./data";
+import { DownloadPanel } from "./download-panel";
+import { GroupTree } from "./group-tree";
 import { StructureCanvas } from "./structure-canvas";
-import { useHistory, useStructure } from "./use-structure";
-import type { InspectedBlock } from "./viewport";
+import { blockGroup, buildTree, filterScene, findNode, nodeBounds } from "./tree";
+import { useStructure } from "./use-structure";
+import type { Inspected, ViewportScene } from "./viewport";
 
-function Readout({ block }: { block: InspectedBlock | null }) {
-  if (!block) return <p className="control-help">Hover or tap a block to see its ID and coordinates.</p>;
-  const bracket = block.state.indexOf("[");
+const emptyData: SceneData = { groups: [{ name: "", parent: -1 }], states: [], runs: [], instances: [] };
+
+function pathOf(data: SceneData, group: number) {
+  return groupPath({ groups: data.groups } as Parameters<typeof groupPath>[0], group) || ROOT_LABEL;
+}
+
+function Readout({ picked, data }: { picked: Inspected | null; data: SceneData }) {
+  if (picked?.kind === "display") {
+    const instance = data.instances[picked.instance];
+    if (instance) {
+      return (
+        <div className="inspector-readout">
+          <code className="block-id">{instance.id}</code>
+          <code className="block-properties">{[`@${instance.model}`, ...instance.tags.map((tag) => `.${tag}`)].join(" ")}</code>
+          <p className="block-group">{pathOf(data, instance.group)}</p>
+        </div>
+      );
+    }
+  }
+  if (picked?.kind !== "block") return <p className="control-help">Hover or tap to see a block’s ID, position and group.</p>;
+  const bracket = picked.state.indexOf("[");
   return (
     <div className="inspector-readout">
-      <code className="block-id">{bracket < 0 ? block.state : block.state.slice(0, bracket)}</code>
-      {bracket >= 0 && <code className="block-properties">{block.state.slice(bracket + 1, -1)}</code>}
+      <code className="block-id">{bracket < 0 ? picked.state : picked.state.slice(0, bracket)}</code>
+      {bracket >= 0 && <code className="block-properties">{picked.state.slice(bracket + 1, -1)}</code>}
+      <p className="block-group">{pathOf(data, blockGroup(data, picked.x, picked.y, picked.z))}</p>
       <dl className="position-readout">
         {(["x", "y", "z"] as const).map((axis) => (
           <div key={axis}>
             <dt>{axis.toUpperCase()}</dt>
-            <dd>{block[axis]}</dd>
+            <dd>{picked[axis]}</dd>
           </div>
         ))}
       </dl>
@@ -32,28 +55,37 @@ function Readout({ block }: { block: InspectedBlock | null }) {
 export function StructureViewer({ name }: { name: string }) {
   const endpoint = `/api/structures${structurePath(name)}`;
   const current = useStructure(endpoint);
-  const [requestedStep, setRequestedStep] = useState<number | null>(null);
   const [requestedCut, setRequestedCut] = useState<number | null>(null);
-  const [inspected, setInspected] = useState<InspectedBlock | null>(null);
-  const history = useHistory(endpoint, current.snapshot, requestedStep);
-  const liveDepth = current.snapshot?.historyDepth;
-  const { snapshot } = history;
-  const bounds = snapshot?.bounds;
-  const cutY = bounds && requestedCut !== null ? Math.max(bounds[1], Math.min(bounds[4], requestedCut)) : undefined;
+  const [inspected, setInspected] = useState<Inspected | null>(null);
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
+  const [isolated, setIsolated] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const { snapshot } = current;
+  const data = snapshot?.build ?? emptyData;
+  const frame = useMemo(() => sceneBounds(data), [data]);
+  const tree = useMemo(() => buildTree(data), [data]);
+  const cutY = frame && requestedCut !== null ? Math.max(frame[1], Math.min(frame[4], requestedCut)) : undefined;
   const deferredY = useDeferredValue(cutY);
-  const live = requestedStep === null;
+  // Entries that a rebuild removed no longer isolate or select anything.
+  const activeIsolation = isolated && findNode(tree, isolated) ? isolated : null;
+  const selection = selected ? findNode(tree, selected) : undefined;
+  const highlight = useMemo(() => selection ? nodeBounds(data, selection) : null, [data, selection]);
+  const visible = useMemo(() => filterScene(data, tree, hidden, activeIsolation,
+    frame && deferredY !== undefined ? [frame[0], frame[1], frame[2], frame[3], deferredY, frame[5]] : undefined),
+    [data, tree, hidden, activeIsolation, frame, deferredY]);
+  const scene = useMemo<ViewportScene | null>(
+    () => snapshot ? { blocks: visible.blocks, displays: visible.displays, frame, highlight } : null,
+    [snapshot, visible, frame, highlight]);
 
-  useEffect(() => {
-    if (liveDepth === undefined) return;
-    setRequestedStep((step) => step === null ? null : Math.min(step, liveDepth));
-  }, [liveDepth]);
-
-  const reportPick = useCallback((block: InspectedBlock | null) => {
-    setInspected((previous) => {
-      if (previous?.state === block?.state && previous?.x === block?.x && previous?.y === block?.y && previous?.z === block?.z) return previous;
-      return block;
-    });
+  const reportPick = useCallback((picked: Inspected | null) => {
+    setInspected((previous) => JSON.stringify(previous) === JSON.stringify(picked) ? previous : picked);
   }, []);
+  const toggleHidden = (key: string) => setHidden((previous) => {
+    const next = new Set(previous);
+    if (!next.delete(key)) next.add(key);
+    return next;
+  });
+  const filtered = hidden.size > 0 || activeIsolation !== null;
 
   return (
     <main className="viewer-page">
@@ -62,25 +94,31 @@ export function StructureViewer({ name }: { name: string }) {
       </Button>
       <div className="viewer-heading">
         <h1>{name}</h1>
-        {current.snapshot && (
+        {snapshot && (
           <div className="viewer-meta">
-            <span>{numberFormat.format(snapshot?.blockCount ?? 0)} {snapshot?.blockCount === 1 ? "block" : "blocks"}</span>
-            {bounds && <span title="Dimensions in X, Y, Z order">{formatDimensions(bounds)}</span>}
-            <span className="connection" data-live={live && current.connection === "Live" && !current.error} role="status">
-              <span aria-hidden />{live ? (current.error ? "Update failed" : current.connection) : "Viewing history"}
+            <span>{numberFormat.format(snapshot.blockCount)} {snapshot.blockCount === 1 ? "block" : "blocks"}</span>
+            {snapshot.displayCount > 0 && <span>{numberFormat.format(snapshot.displayCount)} block {snapshot.displayCount === 1 ? "display" : "displays"}</span>}
+            {frame && <span title="Dimensions in X, Y, Z order">{formatDimensions(frame)}</span>}
+            <span className="connection" data-live={current.connection === "Live" && !current.error} role="status">
+              <span aria-hidden />{current.error ? "Update failed" : current.connection}
             </span>
           </div>
         )}
       </div>
-      {current.error && current.snapshot && (
+      {current.error && snapshot && (
         <div className="update-error" role="alert">
           <p>{current.error}</p>
           <Button variant="outline" size="xs" onClick={current.retry}>Retry</Button>
         </div>
       )}
+      {snapshot?.buildError && (
+        <div className="update-error" role="status">
+          <p>Showing the last good build. {snapshot.buildError}</p>
+        </div>
+      )}
       <div className="viewer-layout">
         <div className="stage">
-          <StructureCanvas snapshot={snapshot} cutY={deferredY} requestError={current.error} onPick={reportPick} onRetry={current.retry} />
+          <StructureCanvas snapshot={snapshot} scene={scene} requestError={current.error} onPick={reportPick} onRetry={current.retry} />
           <p className="camera-instructions" id="camera-instructions">
             <span className="drag-instructions">Drag to orbit <span>·</span> Shift + drag to pan <span>·</span> Scroll to zoom</span>
             <span className="touch-instructions">Drag to orbit <span>·</span> Two fingers to pan or zoom</span>
@@ -98,45 +136,31 @@ export function StructureViewer({ name }: { name: string }) {
               aria-labelledby="layer-label"
               aria-valuetext={cutY === undefined ? "All layers" : `Up to Y ${cutY}`}
               type="range"
-              min={bounds?.[1] ?? 0}
-              max={bounds?.[4] ?? 0}
-              value={cutY ?? bounds?.[4] ?? 0}
-              disabled={!bounds || bounds[1] === bounds[4]}
+              min={frame?.[1] ?? 0}
+              max={frame?.[4] ?? 0}
+              value={cutY ?? frame?.[4] ?? 0}
+              disabled={!frame || frame[1] === frame[4]}
               onChange={(event) => {
                 const layer = event.currentTarget.valueAsNumber;
-                setRequestedCut(layer === bounds?.[4] ? null : layer);
+                setRequestedCut(layer === frame?.[4] ? null : layer);
               }}
             />
             <div className="range-labels">
-              <span>{bounds ? `Y ${bounds[1]}` : "—"}</span>
+              <span>{frame ? `Y ${frame[1]}` : "—"}</span>
               <output>{cutY === undefined ? "All layers" : `Up to Y ${cutY}`}</output>
             </div>
           </section>
 
-          <section className="control-section" aria-labelledby="history-label" aria-busy={history.pending}>
+          <section className="control-section" aria-labelledby="groups-label">
             <div className="control-heading">
-              <History size={17} aria-hidden />
-              <h2 id="history-label">Build history</h2>
-              <Button type="button" size="xs" variant="ghost" disabled={live} onClick={() => setRequestedStep(null)}>Go live</Button>
+              <ListTree size={17} aria-hidden />
+              <h2 id="groups-label">Groups</h2>
+              <Button type="button" size="xs" variant="ghost" disabled={!filtered} onClick={() => { setHidden(new Set()); setIsolated(null); }}>Show all</Button>
             </div>
-            <input
-              aria-labelledby="history-label"
-              aria-valuetext={live ? "Latest" : `Step ${history.step} of ${history.depth}`}
-              type="range"
-              min={0}
-              max={history.depth}
-              value={history.step}
-              disabled={!history.depth}
-              onChange={(event) => {
-                const step = event.currentTarget.valueAsNumber;
-                setRequestedStep(step === history.depth ? null : step);
-              }}
-            />
-            <div className="range-labels">
-              <span>{history.depth ? "Initial" : "No build steps"}</span>
-              <output>{history.pending && <LoaderCircle size={12} className="spin" aria-label="Loading step" />}{live ? "Latest" : `${history.step} / ${history.depth}`}</output>
-            </div>
-            {history.error && <p className="history-error" role="alert">{history.error}</p>}
+            <GroupTree nodes={tree} state={{
+              hidden, isolated: activeIsolation, selected,
+              onSelect: setSelected, onHide: toggleHidden, onIsolate: setIsolated,
+            }} />
           </section>
 
           <section className="control-section inspector" aria-labelledby="inspector-label">
@@ -144,7 +168,15 @@ export function StructureViewer({ name }: { name: string }) {
               <MousePointer2 size={16} aria-hidden />
               <h2 id="inspector-label">Block inspector</h2>
             </div>
-            <Readout block={inspected} />
+            <Readout picked={inspected} data={data} />
+          </section>
+
+          <section className="control-section download" aria-labelledby="download-label">
+            <div className="control-heading">
+              <Download size={16} aria-hidden />
+              <h2 id="download-label">Export</h2>
+            </div>
+            <DownloadPanel endpoint={endpoint} name={name} disabled={!frame} />
           </section>
         </Card>
       </div>

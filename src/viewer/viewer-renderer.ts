@@ -1,7 +1,15 @@
 import { Mesh, ShaderProgram, type Resources } from "deepslate/render";
 import type { BlockPos, StructureProvider } from "deepslate/core";
 import { mat4 } from "gl-matrix";
+import type { Box } from "../engine/geometry";
+import type { VisibleDisplay } from "../engine/visibility";
 import { MinecraftRenderer } from "../render/shared";
+
+/** Alpha written by the picking pass, telling grid blocks and block displays apart. */
+const PICK_BLOCK = 1;
+const PICK_DISPLAY = 0.5;
+
+export type Picked = { kind: "block"; position: BlockPos } | { kind: "display"; instance: number };
 
 const lineVertex = `
   attribute vec4 vertPos;
@@ -49,10 +57,11 @@ const pickFragment = `
   varying highp vec3 encoded;
   uniform sampler2D sampler;
   uniform float pixelSize;
+  uniform float kind;
   void main() {
     vec2 inset = vec2(0.5 * pixelSize);
     if (texture2D(sampler, clamp(uv, limit.xy + inset, limit.zw - inset)).a < 0.01) discard;
-    gl_FragColor = vec4(encoded, 1.0);
+    gl_FragColor = vec4(encoded, kind);
   }
 `;
 
@@ -67,6 +76,9 @@ export class ViewerRenderer extends MinecraftRenderer {
   private readonly gridProgram: WebGLProgram;
   private readonly pickProgram: WebGLProgram;
   private readonly pickDivisor: WebGLUniformLocation | null;
+  private readonly pickKind: WebGLUniformLocation | null;
+  private readonly highlight = new Mesh();
+  private maxInstance = 0;
   private readonly pickFramebuffer: WebGLFramebuffer;
   private readonly pickTexture: WebGLTexture;
   private readonly pickDepth: WebGLRenderbuffer;
@@ -74,13 +86,14 @@ export class ViewerRenderer extends MinecraftRenderer {
   private readonly pickMatrix = mat4.create();
   private readonly pixel = new Uint8Array(4);
   private activeProgram: WebGLProgram | null = null;
-  private pickPasses = 1;
+  private sceneSize: BlockPos = [1, 1, 1];
 
   constructor(gl: WebGLRenderingContext, structure: StructureProvider, resources: Resources) {
     super(gl, structure, resources);
     this.gridProgram = makeProgram(gl, lineVertex, lineFragment);
     this.pickProgram = makeProgram(gl, pickVertex, pickFragment);
     this.pickDivisor = gl.getUniformLocation(this.pickProgram, "divisor");
+    this.pickKind = gl.getUniformLocation(this.pickProgram, "kind");
     this.attributeCount = gl.getParameter(gl.MAX_VERTEX_ATTRIBS);
 
     const framebuffer = gl.createFramebuffer();
@@ -113,6 +126,34 @@ export class ViewerRenderer extends MinecraftRenderer {
     this.setSceneSize(structure.getSize());
   }
 
+  override setDisplays(displays: readonly VisibleDisplay[], origin: BlockPos) {
+    this.clearVertexAttributes();
+    super.setDisplays(displays, origin);
+    this.maxInstance = displays.reduce((max, display) => Math.max(max, display.instance), 0);
+  }
+
+  /** Outlines the cells of a selection. */
+  setHighlight(box: Box | null, origin: BlockPos) {
+    this.clearVertexAttributes();
+    this.highlight.clear();
+    if (box) {
+      const [x1, y1, z1, x2, y2, z2] = box;
+      this.highlight.addLineCube(x1 - origin[0], y1 - origin[1], z1 - origin[2],
+        x2 - origin[0] + 1, y2 - origin[1] + 1, z2 - origin[2] + 1, [0.98, 0.62, 0.12]);
+    }
+    this.highlight.rebuild(this.gl, { pos: true, color: true });
+  }
+
+  drawHighlight(view: mat4) {
+    if (this.highlight.isEmpty()) return;
+    // Selections stay visible through the blocks around them.
+    this.gl.disable(this.gl.DEPTH_TEST);
+    this.setShader(this.gridProgram);
+    this.prepareDraw(view);
+    this.drawMesh(this.highlight, { pos: true, color: true });
+    this.gl.enable(this.gl.DEPTH_TEST);
+  }
+
   protected override setShader(program: WebGLProgram) {
     if (this.activeProgram !== program) {
       this.clearVertexAttributes();
@@ -127,8 +168,8 @@ export class ViewerRenderer extends MinecraftRenderer {
   }
 
   private setSceneSize(size: BlockPos) {
+    this.sceneSize = size;
     const maxSide = Math.max(1, ...size);
-    this.pickPasses = Math.max(1, Math.ceil(Math.log2(maxSide) / 8));
     this.grid.clear();
     const step = 2 ** Math.ceil(Math.log2(Math.max(maxSide / 24, 1)));
     const [width, , depth] = size;
@@ -151,7 +192,7 @@ export class ViewerRenderer extends MinecraftRenderer {
     this.drawMesh(this.grid, { pos: true, color: true });
   }
 
-  pick(x: number, y: number, width: number, height: number, view: mat4, projection: mat4): BlockPos | null {
+  pick(x: number, y: number, width: number, height: number, view: mat4, projection: mat4): Picked | null {
     const gl = this.gl;
     const result: BlockPos = [0, 0, 0];
     mat4.set(this.pickMatrix, width, 0, 0, 0, 0, height, 0, 0, 0, 0, 1, 0,
@@ -168,19 +209,26 @@ export class ViewerRenderer extends MinecraftRenderer {
     this.bindAtlas();
     this.prepareDraw(view);
     const meshes = this.chunkBuilder.getMeshes();
+    const largest = Math.max(1, ...this.sceneSize, this.maxInstance + 1);
+    const passes = Math.max(1, Math.ceil(Math.log2(largest) / 8));
+    let alpha = 0;
     try {
       // Each pass stores one byte of each local coordinate in RGB.
-      for (let pass = 0, divisor = 1; pass < this.pickPasses; pass++, divisor *= 256) {
+      for (let pass = 0, divisor = 1; pass < passes; pass++, divisor *= 256) {
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         gl.uniform1f(this.pickDivisor, divisor);
+        gl.uniform1f(this.pickKind, PICK_BLOCK);
         for (const mesh of meshes) this.drawMesh(mesh, { pos: true, texture: true, blockPos: true });
+        gl.uniform1f(this.pickKind, PICK_DISPLAY);
+        for (const mesh of this.displayMeshes) this.drawMesh(mesh, { pos: true, texture: true, blockPos: true });
         gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.pixel);
-        if (this.pixel[3] === 0) return null;
+        alpha = this.pixel[3];
+        if (alpha === 0) return null;
         result[0] += this.pixel[0] * divisor;
         result[1] += this.pixel[1] * divisor;
         result[2] += this.pixel[2] * divisor;
       }
-      return result;
+      return alpha > 192 ? { kind: "block", position: result } : { kind: "display", instance: result[0] };
     } finally {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, width, height);
@@ -194,8 +242,10 @@ export class ViewerRenderer extends MinecraftRenderer {
     const gl = this.gl;
     this.clearVertexAttributes();
     gl.useProgram(null);
-    if (this.grid.linePosBuffer) gl.deleteBuffer(this.grid.linePosBuffer);
-    if (this.grid.lineColorBuffer) gl.deleteBuffer(this.grid.lineColorBuffer);
+    for (const lines of [this.grid, this.highlight]) {
+      if (lines.linePosBuffer) gl.deleteBuffer(lines.linePosBuffer);
+      if (lines.lineColorBuffer) gl.deleteBuffer(lines.lineColorBuffer);
+    }
     gl.deleteProgram(this.gridProgram);
     gl.deleteProgram(this.pickProgram);
     gl.deleteTexture(this.pickTexture);

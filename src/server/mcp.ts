@@ -2,26 +2,23 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { timingSafeEqual, createHash } from "node:crypto";
 import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
-import { runBuild, searchBlocks } from "../engine";
-import { renderContactSheet } from "../render/contact-sheet";
-import { importStructure, saveStructure, formats } from "./files";
-import { materials, readLayers } from "./read";
+import { normalizeBox, type Box, type Position } from "../engine/geometry";
+import { SelectorError } from "../engine/selector";
+import { renderImage } from "../render/image";
+import { formats } from "./export";
+import { saveBuild } from "./files";
+import { BASH_DESCRIPTION, INSTRUCTIONS } from "./mcp-guide";
 import { authorizeMcpOAuth, mcpOAuthConfig, mcpOAuthConfigurationError, mcpWriteScope } from "./mcp-oauth";
 import { workspaceSelection } from "./workspace-access";
-import {
-  activeStructure, blockEntries, buildStructure, listStructures, openStructure, snapshot,
-  ToolError, undoStructure,
-} from "./store";
+import { activeProject, lastBuild, listProjects, openProject, runCommand, undo, ToolError } from "./store";
 
-const views = z.enum(["iso_ne", "iso_nw", "iso_se", "iso_sw", "top", "north", "south", "east", "west"]);
 const coordinate = z.number().int().min(-30_000_000).max(30_000_000);
-const box = z.tuple([coordinate, coordinate, coordinate, coordinate, coordinate, coordinate])
-  .transform(([a, b, c, x, y, z]) => [
-    Math.min(a, x), Math.min(b, y), Math.min(c, z), Math.max(a, x), Math.max(b, y), Math.max(c, z),
-  ] as [number, number, number, number, number, number]);
+const cell = z.array(coordinate).length(3);
+const point = z.array(z.number().min(-30_000_000).max(30_000_000)).length(3);
 
 type Result = { ok: boolean; summary?: string; [key: string]: unknown };
-type ImageResult = { result: Result; png: Buffer };
+/** Plain output, as from a shell, with an optional image. */
+type TextResult = { text: string; png?: Buffer };
 
 const requests = new AsyncLocalStorage<{ workspace: string; origin: string; subject?: string; canWrite: boolean }>();
 function context() {
@@ -30,19 +27,21 @@ function context() {
   return request;
 }
 
-function resultMessage(value: Result | ImageResult) {
-  const result = ("png" in value ? value.result : value) as Result;
-  const png = "png" in value ? value.png as Buffer : undefined;
-  const response = { ...result, summary: (result.summary ?? String(result.error ?? "Request failed.")).split(/\r?\n/, 1)[0] };
-  const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [
-    { type: "text", text: JSON.stringify(response) },
-  ];
-  if (png) content.push({ type: "image", data: png.toString("base64"), mimeType: "image/png" });
-  return { content, structuredContent: response, isError: !result.ok };
+function resultMessage(value: Result | TextResult) {
+  type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+  if ("text" in value) {
+    const { text, png } = value as TextResult;
+    const content: Content[] = [{ type: "text", text }];
+    if (png) content.push({ type: "image", data: png.toString("base64"), mimeType: "image/png" });
+    return { content, isError: false };
+  }
+  const response = { ...value, summary: (value.summary ?? String(value.error ?? "Request failed.")).split(/\r?\n/, 1)[0] };
+  const content: Content[] = [{ type: "text", text: JSON.stringify(response) }];
+  return { content, structuredContent: response, isError: !value.ok };
 }
 
 function tool<T>(
-  action: (input: T) => Promise<Result | ImageResult> | Result | ImageResult,
+  action: (input: T) => Promise<Result | TextResult>,
   writes?: true | ((input: T) => boolean),
 ) {
   return async (input: T) => {
@@ -52,7 +51,7 @@ function tool<T>(
       }
       return resultMessage(await action(input));
     } catch (error) {
-      if (error instanceof ToolError) {
+      if (error instanceof ToolError || error instanceof SelectorError) {
         return resultMessage({ ok: false, error: error.message, hint: error.hint });
       }
       console.error("Tsumiki tool error", error);
@@ -64,120 +63,97 @@ function tool<T>(
   };
 }
 
-async function render(...args: Parameters<typeof renderContactSheet>) {
-  try {
-    return await renderContactSheet(...args);
-  } catch (error) {
-    console.error("Tsumiki render error", error);
-    throw new ToolError("The PNG render could not be created.", "Check the Minecraft client jar and WebGL display setup, narrow the view box, or use build with look:false.");
-  }
-}
-
 const handler = createMcpHandler((server) => {
+  const viewerUrl = (project: string) => new URL(`/${encodeURIComponent(project)}`, context().origin).href;
+
   server.registerTool("open", {
-    description: "Omit name to list existing structure names and viewer links. Supply a name to select or create a structure for this workspace, or import a workspace .schem, .litematic or .nbt.",
-    inputSchema: z.object({ name: z.string().max(80).optional(), from: z.string().min(1).optional() }),
-  }, tool(async ({ name, from }) => {
-    const { workspace, origin, subject } = context();
-    const viewerUrl = (structure: string) => new URL(`/${encodeURIComponent(structure)}`, origin).href;
+    description: "Omit name to list projects and their viewer links. Supply a name to switch to a project, creating it if new. reset: true also empties its build.js, which undo can reverse.",
+    inputSchema: z.object({ name: z.string().max(80).optional(), reset: z.boolean().optional() }),
+  }, tool(async ({ name, reset }) => {
     if (name === undefined) {
-      if (from) throw new ToolError("An import needs a name.", "Supply a new structure name.");
-      const structures = await listStructures();
+      if (reset) throw new ToolError("Reset needs a project name.", "Supply the name of the project to reset.");
+      const projects = await listProjects();
       return {
-        ok: true, summary: `${structures.length} structures.`,
-        structures: structures.map((info) => ({ ...info, viewerUrl: viewerUrl(info.name) })),
+        ok: true, summary: `${projects.length} project${projects.length === 1 ? "" : "s"}.`,
+        projects: projects.map((info) => ({ ...info, viewerUrl: viewerUrl(info.name) })),
       };
     }
-    const { info, blocks } = await openStructure(name, workspace, from ? () => importStructure(from, subject) : undefined);
+    const { info, created, report } = await openProject(name, context().workspace, reset);
     return {
-      ok: true, summary: `Opened "${name}" with ${info.blockCount} blocks.`, ...info,
-      materials: materials(blocks).slice(0, 10), viewerUrl: viewerUrl(name),
+      ok: true, summary: `${created ? "Created" : reset ? "Reset" : "Opened"} "${name}" with ${info.blockCount} blocks.`,
+      ...info, ...(report ? { report } : {}), viewerUrl: viewerUrl(name),
     };
   }, ({ name }) => name !== undefined));
 
-  server.registerTool("build", {
-    description: [
-      "Run synchronous JavaScript against the open structure as one undo step.",
-      "Use set(x,y,z,block), fill([x1,y1,z1,x2,y2,z2],block), get(x,y,z),",
-      "turn(block,{rotate:90,mirror:'x'}), fam(id), rand(), and log(...values).",
-      "Fill corners are inclusive. A block can be 'oak_stairs[facing=north]',",
-      "'stone_bricks*6,mossy_stone_bricks*2', or (x,y,z)=>id. Air erases.",
-      "Positive rotations are clockwise. Set seed to repeat rand() and mixes.",
-      "Each call can run for 10 seconds and write up to 2 million blocks.",
-    ].join(" "),
-    inputSchema: z.object({ code: z.string().min(1).max(262_144), look: z.union([views, z.literal(false)]).default("iso_se"), seed: z.number().int().optional() }),
-  }, tool(async ({ code, look, seed }) => {
-    const name = await activeStructure(context().workspace);
-    return buildStructure<Result | ImageResult>(name, async (blocks) => {
-      const outcome = await runBuild(blocks, { code, seed });
-      if (!outcome.ok) return { result: outcome };
-      const { blocks: updated, changes, ...result } = outcome;
-      const image = look === false ? undefined : await render(blockEntries(updated), { views: [look] });
-      return { result: image ? { result, png: image } : result, updated: { blocks: updated, changes } };
-    });
+  server.registerTool("bash", {
+    description: BASH_DESCRIPTION,
+    inputSchema: z.object({ command: z.string().min(1).max(512 * 1024) }),
+  }, tool(async ({ command }) => {
+    const { stdout, stderr, exitCode, notes, report } = await runCommand(await activeProject(context().workspace), command);
+    const sections = [
+      stdout, stderr, exitCode ? `[exit code ${exitCode}]` : "", ...notes.map((note) => `[note] ${note}`), report ?? "",
+    ].filter(Boolean).map((section) => section.replace(/\n$/, ""));
+    return { text: sections.join("\n") || "(no output)" };
   }, true));
 
-  server.registerTool("look", {
-    description: "Render one PNG contact sheet of up to four views. Supply box or cut_y to reveal part of the structure.",
-    inputSchema: z.object({ views: z.array(views).min(1).max(4).default(["iso_se"]), box: box.optional(), cut_y: coordinate.optional() }),
+  server.registerTool("render", {
+    description: [
+      "Draw the last good build as one PNG seen from camera.from looking toward camera.at, in world coordinates",
+      "(cell 0 spans 0 to 1; x east, y up, z south). Looking straight down puts north at the top.",
+      "hide takes a build script selector and leaves out its groups and instances.",
+      "section [[x1,y1,z1],[x2,y2,z2]] shows only the cells in that inclusive box, to cut a building open;",
+      "a block display stays when its centre is inside. Call again for another viewpoint.",
+    ].join(" "),
+    inputSchema: z.object({
+      camera: z.object({ from: point, at: point }),
+      hide: z.string().min(1).max(1_024).optional(),
+      section: z.array(cell).length(2).optional(),
+    }),
     annotations: { readOnlyHint: true },
-  }, tool(async ({ views, box, cut_y }) => {
-    const { info, blocks } = await snapshot(await activeStructure(context().workspace));
-    return {
-      result: { ok: true, summary: `Rendered ${views.length} view${views.length === 1 ? "" : "s"} of "${info.name}".`, views, bounds: box ?? info.bounds },
-      png: await render(blockEntries(blocks), { views, box, cutY: cut_y }),
-    };
-  }));
-
-  server.registerTool("read", {
-    description: "Read block states as text grids (X columns, Z rows), or count materials. Optionally limit box and Y range.",
-    inputSchema: z.object({ y: z.union([coordinate, z.tuple([coordinate, coordinate])]).optional(), box: box.optional(), counts: z.boolean().default(false) }),
-    annotations: { readOnlyHint: true },
-  }, tool(async ({ y, box, counts }) => {
-    const { info, blocks } = await snapshot(await activeStructure(context().workspace));
-    let bounds = box ?? info.bounds;
-    if (y !== undefined && counts && bounds) {
-      const [min, max] = typeof y === "number" ? [y, y] : y;
-      if (min > max) throw new ToolError("The Y range is reversed.", "Use [lowest Y, highest Y].");
-      bounds = [bounds[0], Math.max(bounds[1], min), bounds[2], bounds[3], Math.min(bounds[4], max), bounds[5]];
+  }, tool(async ({ camera, hide, section }) => {
+    const [from, at] = [camera.from as Position, camera.at as Position];
+    if (from.every((value, axis) => value === at[axis])) {
+      throw new ToolError("The camera is at its own target.", "Move camera.from away from camera.at.");
     }
-    if (counts) {
-      const counts = materials(blocks, bounds ?? undefined);
-      return { ok: true, summary: `Counted ${counts.length} materials in "${info.name}".`, bounds, counts };
+    const { info, build } = await lastBuild(await activeProject(context().workspace));
+    const box = section && normalizeBox([...section[0], ...section[1]] as Box);
+    let image;
+    try {
+      image = await renderImage(build, { camera: { from, at }, hide, section: box });
+    } catch (error) {
+      if (error instanceof SelectorError) throw error;
+      console.error("Tsumiki render error", error);
+      throw new ToolError("The PNG render could not be created.", "Check the Minecraft client jar and WebGL display setup, or narrow the section.");
     }
-    const layers = readLayers(blocks, bounds, y);
-    return { ok: true, summary: `Read ${layers.length} layers of "${info.name}".`, bounds, layers };
+    const lines = [`"${info.name}": ${image.blocks} blocks and ${image.displays} block displays shown.`];
+    if (info.buildError) lines.push(`This is the last good build. The current build.js fails: ${info.buildError}`);
+    return { text: lines.join("\n"), png: image.png };
   }));
-
-  server.registerTool("blocks", {
-    description: "Search up to 20 block IDs by name or color. An exact ID returns properties and family forms.",
-    inputSchema: z.object({ q: z.string().min(1).max(120) }),
-    annotations: { readOnlyHint: true },
-  }, tool(async ({ q }) => ({ ok: true, summary: `Block catalog results for "${q}".`, results: searchBlocks(q) })));
 
   server.registerTool("undo", {
-    description: "Undo one or more build calls in the active structure.",
+    description: "Restore build.js to how it was before the last changing bash call (or several, with steps), then rebuild.",
     inputSchema: z.object({ steps: z.number().int().positive().max(2_147_483_647).default(1) }),
     annotations: { destructiveHint: true },
   }, tool(async ({ steps }) => {
-    const info = await undoStructure(await activeStructure(context().workspace), steps);
-    return { ok: true, summary: `Undid ${steps} build step${steps === 1 ? "" : "s"} in "${info.name}".`, ...info };
+    const { report } = await undo(await activeProject(context().workspace), steps);
+    return { text: `Undid ${steps} change${steps === 1 ? "" : "s"} to build.js.\n${report}` };
   }, true));
 
   server.registerTool("save", {
-    description: "Export the active structure to the workspace and get a download URL and material list. Paths must be within the workspace.",
+    description: "Export the last good build to the workspace and get a download URL and material list. Block displays are exported as one block_display entity per block part (Java 1.19.4 or later). Paths must be within the workspace.",
     inputSchema: z.object({ format: z.enum(formats).default("schem"), path: z.string().min(1).optional(), version: z.string().default("26.3") }),
   }, tool(async ({ format, path, version }) => {
-    const { info, blocks } = await snapshot(await activeStructure(context().workspace));
-    const save = await saveStructure(info, blocks, { format, path, version }, context().subject);
+    const { info, build } = await lastBuild(await activeProject(context().workspace));
+    const saved = await saveBuild(info.name, build, { format, path, version }, context().subject);
     return {
-      ok: true, summary: `Saved "${info.name}" as ${format} for Minecraft ${version}.`, ...save,
-      downloadUrl: new URL(save.downloadUrl, context().origin).href,
+      ok: true, summary: `Saved "${info.name}" as ${format} for Minecraft ${version}.`, ...saved,
+      ...(info.buildError ? { staleBecause: info.buildError } : {}),
+      downloadUrl: new URL(saved.downloadUrl, context().origin).href,
     };
   }, true));
 }, {
   serverInfo: { name: "Tsumiki", version: "0.1.0" },
-  instructions: "Call open with no arguments to discover existing structure names and viewer links. Call open with the exact name before building, inspecting, or saving it. A new name creates a structure. Share its viewerUrl with the user. Coordinates are x east, y up, z south. Use build with look:false to skip the default iso_se PNG.",
+  instructions: INSTRUCTIONS,
   maxSubscriptions: 0,
 });
 

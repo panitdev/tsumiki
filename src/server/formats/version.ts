@@ -1,4 +1,4 @@
-import { CATALOG_DATA_VERSION, CATALOG_VERSION, expandBlock } from "../../engine";
+import { CATALOG_DATA_VERSION, CATALOG_VERSION, expandBlock } from "../../engine/catalog";
 import { ToolError } from "../store";
 
 type Properties = Record<string, string>;

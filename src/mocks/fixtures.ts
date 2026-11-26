@@ -1,79 +1,59 @@
-import type { RenderAssetData, RenderBlock } from "../render/shared";
+import type { SceneData } from "../engine/scene";
+import type { RenderAssetData } from "../render/shared";
 import type { StructureSnapshot, StructureSummary } from "../viewer/data";
 
-export const structureSummaries: StructureSummary[] = [
-  { name: "castle-keep", bounds: [0, 0, 0, 7, 5, 7], blockCount: 120, historyDepth: 3, version: 7 },
-  { name: "windmill", bounds: [0, 0, 0, 5, 11, 5], blockCount: 64, historyDepth: 1, version: 12 },
-  { name: "empty-canvas", bounds: null, blockCount: 0, historyDepth: 0, version: 1 },
-];
+type MockBlock = [x: number, y: number, z: number, state: string, group: number];
 
-function box(size: [number, number, number]): StructureSnapshot["bounds"] {
-  const [w, h, d] = size;
-  return [0, 0, 0, w - 1, h - 1, d - 1];
+/** One single-cell run per block keeps the fixtures readable. */
+function scene(groups: SceneData["groups"], blocks: MockBlock[], instances: SceneData["instances"] = []): SceneData {
+  const states = [...new Set(blocks.map((block) => block[3]))];
+  return {
+    groups: [{ name: "", parent: -1 }, ...groups],
+    states,
+    runs: blocks.flatMap(([x, y, z, state, group]) => [x, y, z, 1, states.indexOf(state), group]),
+    instances,
+  };
 }
 
-const castleWalls: RenderBlock[] = [];
+const castle: MockBlock[] = [];
 for (let x = 0; x <= 7; x++) {
   for (let z = 0; z <= 7; z++) {
-    castleWalls.push({ x, y: 0, z, state: "minecraft:stone" });
+    castle.push([x, 0, z, "stone", 2]);
     if (x === 0 || x === 7 || z === 0 || z === 7) {
-      for (let y = 1; y <= 4; y++) {
-        castleWalls.push({ x, y, z, state: y === 4 ? "minecraft:oak_planks" : "minecraft:dirt" });
-      }
+      for (let y = 1; y <= 4; y++) castle.push([x, y, z, y === 4 ? "oak_planks" : "dirt", y === 4 ? 3 : 2]);
     }
   }
 }
 
+function snapshot(name: string, build: SceneData, bounds: StructureSummary["bounds"], version: number,
+    buildError: string | null = null): StructureSnapshot {
+  return {
+    name, bounds, version, buildError, build, revision: version,
+    blockCount: build.runs.length / 6,
+    displayCount: build.instances.reduce((sum, instance) => sum + instance.parts.length, 0),
+  };
+}
+
 const snapshots: Record<string, StructureSnapshot> = {
-  "castle-keep": {
-    name: "castle-keep",
-    bounds: box([8, 5, 8]),
-    blockCount: castleWalls.length,
-    historyDepth: 3,
-    version: 7,
-    blocks: castleWalls,
-  },
-  "windmill": {
-    name: "windmill",
-    bounds: [0, 0, 0, 2, 5, 2],
-    blockCount: 18,
-    historyDepth: 1,
-    version: 12,
-    blocks: [
-      { x: 1, y: 0, z: 1, state: "minecraft:stone" },
-      { x: 1, y: 1, z: 1, state: "minecraft:dirt" },
-      { x: 1, y: 2, z: 1, state: "minecraft:oak_planks" },
-      { x: 0, y: 1, z: 1, state: "minecraft:oak_planks" },
-      { x: 2, y: 1, z: 1, state: "minecraft:oak_planks" },
-      { x: 1, y: 1, z: 0, state: "minecraft:oak_planks" },
-      { x: 1, y: 1, z: 2, state: "minecraft:oak_planks" },
-    ],
-  },
-  "empty-canvas": {
-    name: "empty-canvas",
-    bounds: null,
-    blockCount: 0,
-    historyDepth: 0,
-    version: 1,
-    blocks: [],
-  },
+  "castle-keep": snapshot("castle-keep", scene(
+    [{ name: "Castle", parent: 0 }, { name: "Walls", parent: 1 }, { name: "Trim", parent: 1 }],
+    castle,
+    [{
+      id: "Castle/banner-1", model: "banner", tags: ["decor"], group: 1,
+      parts: [{ block: "oak_planks", matrix: [1, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 1, 0, 3, 5, 3, 1] }],
+    }],
+  ), [0, 0, 0, 7, 5, 7], 7),
+  "windmill": snapshot("windmill", scene([], [
+    [1, 0, 1, "stone", 0], [1, 1, 1, "dirt", 0], [1, 2, 1, "oak_planks", 0], [0, 1, 1, "oak_planks", 0],
+    [2, 1, 1, "oak_planks", 0], [1, 1, 0, "oak_planks", 0], [1, 1, 2, "oak_planks", 0],
+  ]), [0, 0, 0, 2, 2, 2], 12, '[build failed] build.js:4 unknown block "oak_plank", did you mean "oak_planks"?'),
+  "empty-canvas": snapshot("empty-canvas", scene([], []), null, 1),
 };
 
-export function findSnapshot(name: string, undo: number): StructureSnapshot | null {
-  const snapshot = snapshots[name];
-  if (!snapshot) return null;
-  if (!undo) return snapshot;
-  // Mock history: earlier steps drop the newest blocks (highest y first).
-  const steps = Math.min(undo, snapshot.historyDepth);
-  const sorted = [...snapshot.blocks].sort((a, b) => b.y - a.y || b.z - a.z || b.x - a.x);
-  const blocks = sorted.slice(steps * 8).map(block => ({ ...block }));
-  return {
-    ...snapshot,
-    version: snapshot.version,
-    blocks,
-    blockCount: blocks.length,
-    bounds: blocks.length ? [0, 0, 0, 7, 4, 7] : null,
-  };
+export const structureSummaries: StructureSummary[] = Object.values(snapshots).map(({ build: _, ...summary }) => summary);
+
+export function findSnapshot(name: string): StructureSnapshot | null {
+  return snapshots[name] ?? null;
 }
 
 export function assetManifest(): RenderAssetData {

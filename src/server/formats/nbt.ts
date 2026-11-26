@@ -1,12 +1,23 @@
 import {
-  NbtByteArray, NbtCompound, NbtFile, NbtInt, NbtIntArray, NbtList, NbtLong,
+  NbtByteArray, NbtCompound, NbtDouble, NbtFile, NbtFloat, NbtInt, NbtIntArray, NbtList, NbtLong,
   NbtLongArray, NbtShort, NbtString, NbtType,
 } from "deepslate/nbt";
 import { gunzipSync, inflateSync } from "node:zlib";
-import { blockKey, normalizeBlock, type Blocks, type Box } from "../../engine";
+import { normalizeBlock } from "../../engine/catalog";
+import type { Box } from "../../engine/geometry";
 import { ToolError } from "../store";
 
 type Vec = [number, number, number];
+/** Blocks read back from a file, keyed "x,y,z". */
+type Blocks = Map<string, string>;
+export interface BlockDisplay {
+  /** World position of the entity. */
+  pos: Vec;
+  /** Full block state, such as minecraft:lantern[hanging=true]. */
+  state: string;
+  /** Row-major affine matrix relative to pos. */
+  transformation: number[];
+}
 type Cell = { x: number; y: number; z: number; state: number };
 type Kind = "schem" | "litematic" | "nbt";
 const maxVolume = 16_000_000;
@@ -66,17 +77,35 @@ function relativeBounds(bounds: Box | null): { origin: Vec; size: Vec } {
   return { origin: [x, y, z], size: dimension(maxX - x + 1, maxY - y + 1, maxZ - z + 1) };
 }
 
-export function writeNbt(kind: Kind, name: string, dataVersion: number, bounds: Box | null, palette: string[], cells: Cell[]) {
+function doubleList(values: Vec) {
+  return new NbtList(values.map((value) => new NbtDouble(value)), NbtType.Double);
+}
+
+function displayData(tag: NbtCompound, { state, transformation }: BlockDisplay) {
+  return tag.set("block_state", stateTag(state))
+    .set("transformation", new NbtList(transformation.map((value) => new NbtFloat(value)), NbtType.Float));
+}
+
+/** `bounds` must cover the cells and the positions of the displays. */
+export function writeNbt(kind: Kind, name: string, dataVersion: number, bounds: Box | null, palette: string[], cells: Cell[],
+    displays: BlockDisplay[] = []) {
   const { origin, size: [w, h, d] } = relativeBounds(bounds);
   const file = NbtFile.create({ name: "", compression: "gzip" });
   const paletteTags = () => new NbtList(palette.map(stateTag), NbtType.Compound);
+  const relative = ({ pos }: BlockDisplay) => pos.map((value, axis) => value - origin[axis]) as Vec;
+  const entities = (build: (display: BlockDisplay) => NbtCompound) =>
+    new NbtList(displays.map(build), NbtType.Compound);
 
   if (kind === "nbt") {
     const blocks = cells.map(({ x, y, z, state }) => NbtCompound.create()
       .set("pos", listVec([x - origin[0], y - origin[1], z - origin[2]]))
       .set("state", new NbtInt(state)));
     file.root.set("size", listVec([w, h, d])).set("DataVersion", new NbtInt(dataVersion))
-      .set("palette", paletteTags()).set("entities", new NbtList())
+      .set("palette", paletteTags())
+      .set("entities", entities((display) => NbtCompound.create()
+        .set("pos", doubleList(relative(display)))
+        .set("blockPos", listVec(relative(display).map(Math.floor) as Vec))
+        .set("nbt", displayData(NbtCompound.create().set("id", new NbtString("minecraft:block_display")), display))))
       .set("blocks", new NbtList(blocks, NbtType.Compound));
     return file.write();
   }
@@ -103,6 +132,10 @@ export function writeNbt(kind: Kind, name: string, dataVersion: number, bounds: 
       .set("Version", new NbtInt(3)).set("DataVersion", new NbtInt(dataVersion))
       .set("Width", new NbtShort(w)).set("Height", new NbtShort(h)).set("Length", new NbtShort(d))
       .set("Offset", new NbtIntArray(origin))
+      .set("Entities", entities((display) => NbtCompound.create()
+        .set("Id", new NbtString("minecraft:block_display"))
+        .set("Pos", doubleList(relative(display)))
+        .set("Data", displayData(NbtCompound.create(), display))))
       .set("Blocks", NbtCompound.create().set("Palette", values)
         .set("Data", new NbtByteArray(encoded.subarray(0, at))).set("BlockEntities", new NbtList())));
   } else {
@@ -117,9 +150,12 @@ export function writeNbt(kind: Kind, name: string, dataVersion: number, bounds: 
       packed[word] |= value << offset;
       if (offset + bits > 64n) packed[word + 1] |= value >> (64n - offset);
     }
-    const region = NbtCompound.create().set("Position", vecTag([0, 0, 0])).set("Size", vecTag([w, h, d]))
+    const region = NbtCompound.create().set("Position", vecTag(origin)).set("Size", vecTag([w, h, d]))
       .set("BlockStatePalette", paletteTags()).set("BlockStates", new NbtLongArray(packed))
-      .set("Entities", new NbtList()).set("TileEntities", new NbtList())
+      .set("Entities", entities((display) => displayData(NbtCompound.create()
+        .set("id", new NbtString("minecraft:block_display"))
+        .set("Pos", doubleList(relative(display))), display)))
+      .set("TileEntities", new NbtList())
       .set("PendingBlockTicks", new NbtList()).set("PendingFluidTicks", new NbtList());
     const now = new NbtLong(BigInt(Date.now()));
     const metadata = NbtCompound.create().set("Name", new NbtString(name)).set("Author", new NbtString("Tsumiki"))
@@ -166,7 +202,7 @@ function add(map: Blocks, point: Vec, state?: string) {
   if (!state) invalid();
   if (!point.every(coord => Number.isInteger(coord) && Math.abs(coord) <= 30_000_000)) invalid("The file exceeds supported coordinates.");
   if (state === "air") return;
-  const key = blockKey(...point);
+  const key = point.join(",");
   map.set(key, state);
   if (map.size > maxBlocks) invalid("The import exceeds two million blocks.");
 }

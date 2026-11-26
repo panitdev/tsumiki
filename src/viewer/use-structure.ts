@@ -67,38 +67,3 @@ export function useStructure(endpoint: string) {
     },
   };
 }
-
-export function useHistory(endpoint: string, latest: StructureSnapshot | null, requestedStep: number | null) {
-  const depth = latest?.historyDepth ?? 0;
-  const step = Math.min(requestedStep ?? depth, depth);
-  const undo = depth - step;
-  const version = latest?.version;
-  const [history, setHistory] = useState<(StructureResponse & { version: number; undo: number }) | null>(null);
-
-  useEffect(() => {
-    if (!undo || version === undefined) return;
-    const controller = new AbortController();
-    const wait = window.setTimeout(() => {
-      getJson<StructureSnapshot>(`${endpoint}?undo=${undo}`, controller.signal).then(
-        (snapshot) => {
-          if (!controller.signal.aborted) setHistory({ version, undo, snapshot, error: null });
-        },
-        (reason: unknown) => {
-          if (!controller.signal.aborted) {
-            setHistory({ version, undo, snapshot: null, error: reason instanceof Error ? reason.message : "Couldn’t load this build step." });
-          }
-        },
-      );
-    }, 75);
-    return () => { window.clearTimeout(wait); controller.abort(); };
-  }, [endpoint, undo, version]);
-
-  const upToDate = history?.version === version && history?.undo === undo;
-  return {
-    snapshot: undo ? (history?.snapshot ?? latest) : latest,
-    pending: Boolean(undo && !upToDate),
-    error: undo && upToDate ? history?.error : null,
-    depth,
-    step,
-  };
-}

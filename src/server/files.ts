@@ -1,15 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { Blocks } from "../engine";
-import { blockEntries, ToolError, type StructureInfo } from "./store";
-import { readNbt, writeNbt } from "./formats/nbt";
-import { materialList } from "./formats/materials";
-import { targetCatalog } from "./formats/version";
+import type { SceneData } from "../engine/scene";
+import { exportBuild, exportFileName, type Format } from "./export";
+import { ToolError } from "./store";
 import { workspaceDirectory } from "./workspace-access";
 
-export const formats = ["schem", "litematic", "nbt", "mcfunction"] as const;
-type Format = typeof formats[number];
 const artifacts = ".tsumiki-downloads";
 const users = ".tsumiki-users";
 
@@ -42,60 +38,11 @@ function userPath(base: string, path: string) {
   return candidate;
 }
 
-export async function importStructure(path: string, subject?: string): Promise<Blocks> {
-  const ext = extname(path).toLowerCase().slice(1);
-  if (ext !== "schem" && ext !== "litematic" && ext !== "nbt") {
-    throw new ToolError("Unsupported import format.", "Use a .schem, .litematic or .nbt file.");
-  }
-  try {
-    const base = await workspace(subject);
-    const target = userPath(base, await realpath(userPath(base, path)));
-    const info = await stat(target);
-    if (!info.isFile() || info.size > 64 * 1024 * 1024) {
-      throw new ToolError("The import is not a file or exceeds 64 MiB.", "Choose a smaller structure file.");
-    }
-    return readNbt(ext, await readFile(target));
-  } catch (error) {
-    if (error instanceof ToolError) throw error;
-    throw new ToolError("The structure file could not be read.", "Verify its path and confirm the file is a valid structure of the specified type.");
-  }
-}
-
-export async function saveStructure(info: StructureInfo, blocks: ReadonlyMap<string, string>,
+export async function saveBuild(name: string, build: SceneData,
     { format, path, version }: { format: Format; path?: string; version: string }, subject?: string) {
-  const target = await targetCatalog(version);
-  const palette = ["minecraft:air"];
-  const paletteIndices = new Map(palette.map((state, i) => [state, i]));
-  const translated = new Map<string, number>();
-  const substitutions = new Map<string, { from: string; to: string; count: number }>();
-  const cells = [];
-  for (const { x, y, z, state } of blockEntries(blocks)) {
-    let index = translated.get(state);
-    if (index === undefined) {
-      const exported = target.translate(state);
-      index = paletteIndices.get(exported);
-      if (index === undefined) {
-        index = palette.length;
-        palette.push(exported);
-        paletteIndices.set(exported, index);
-      }
-      translated.set(state, index);
-      const id = exported.split("[", 1)[0].slice("minecraft:".length);
-      if (id !== state.split("[", 1)[0]) substitutions.set(state, { from: state, to: exported, count: 0 });
-    }
-    const replacement = substitutions.get(state);
-    if (replacement) replacement.count++;
-    cells.push({ x, y, z, state: index });
-  }
-  const { materials, unplaceable } = materialList(palette, cells);
-  const [ox, oy, oz] = info.bounds ?? [0, 0, 0];
-  // Strict placement preserves explicit neighbor-dependent states from Java 1.21.5 onward.
-  const strict = target.dataVersion >= 4325 ? " strict" : "";
-  const bytes = format === "mcfunction" ? Buffer.from(
-    cells.map(({ x, y, z, state }) => `setblock ~${x - ox} ~${y - oy} ~${z - oz} ${palette[state]}${strict}`).join("\n") + "\n",
-  ) : writeNbt(format, info.name, target.dataVersion, info.bounds, palette, cells);
+  const { bytes, ...result } = await exportBuild(name, build, format, version);
   const base = await workspace(subject);
-  const defaultName = info.name.replace(/[<>:"|?*]/g, "_") + `.${format}`;
+  const defaultName = exportFileName(name, format);
   let filepath = userPath(base, path ?? defaultName);
   if (path) {
     try {
@@ -126,7 +73,7 @@ export async function saveStructure(info: StructureInfo, blocks: ReadonlyMap<str
     console.error("Tsumiki export error", error);
     throw new ToolError("The export could not be saved.", "Check the workspace permissions and file path.");
   }
-  return { path: filepath, downloadUrl: `/api/downloads/${id}`, format, version, materials, unplaceable, substitutions: [...substitutions.values()] };
+  return { path: filepath, downloadUrl: `/api/downloads/${id}`, format, version, ...result };
 }
 
 export async function download(id: string, subject?: string) {

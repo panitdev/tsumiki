@@ -3,7 +3,7 @@ import { chromium } from 'playwright';
 const browser = await chromium.launch();
 const page = await browser.newPage();
 for (const [id, expectText] of [
-  ['viewer-structureviewer--castle-keep', '8 × 5 × 8'],
+  ['viewer-structureviewer--castle-keep', '8 × 6 × 8'],
   ['viewer-structureviewer--castle-keep', 'Live'],
   ['viewer-structureviewer--empty-canvas', 'This structure is empty.'],
   ['viewer-structureviewer--broken-structure', 'The builder agent lost this structure.'],

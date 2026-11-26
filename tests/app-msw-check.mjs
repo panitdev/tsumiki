@@ -17,7 +17,7 @@ try {
 await page.goto('http://localhost:3101/castle-keep');
 try {
   await page.getByText('Live').first().waitFor({ timeout: 20000 });
-  await page.getByText('8 × 5 × 8').first().waitFor({ timeout: 5000 });
+  await page.getByText('8 × 6 × 8').first().waitFor({ timeout: 5000 });
   console.log('PASS viewer renders with mocked snapshot + SSE (Live)');
 } catch {
   console.log('FAIL viewer:', (await page.evaluate(() => document.body.innerText)).slice(0, 300));

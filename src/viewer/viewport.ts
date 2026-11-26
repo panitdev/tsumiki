@@ -1,14 +1,25 @@
 import { mat4, vec3 } from "gl-matrix";
 import type { Resources } from "deepslate/render";
-import { makeStructure, type RenderBlock } from "../render/shared";
-import type { Bounds } from "./data";
+import type { Box } from "../engine/geometry";
+import type { VisibleBlock, VisibleDisplay } from "../engine/visibility";
+import { makeStructure } from "../render/shared";
 import { ViewerRenderer } from "./viewer-renderer";
 
 const fieldOfView = Math.PI / 4;
 const up = vec3.fromValues(0, 1, 0);
 
 interface PointerPosition { x: number; y: number }
-export interface InspectedBlock { state: string; x: number; y: number; z: number }
+export type Inspected =
+  | { kind: "block"; state: string; x: number; y: number; z: number }
+  | { kind: "display"; instance: number };
+
+export interface ViewportScene {
+  blocks: readonly VisibleBlock[];
+  displays: readonly VisibleDisplay[];
+  /** Bounds of the whole build, so that hiding parts does not move the camera. */
+  frame: Box | null;
+  highlight: Box | null;
+}
 
 export class Viewport {
   private readonly gl: WebGLRenderingContext;
@@ -37,7 +48,7 @@ export class Viewport {
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly resources: Resources,
-    private readonly onPick: (block: InspectedBlock | null) => void,
+    private readonly onPick: (picked: Inspected | null) => void,
     private readonly onError: (error: unknown) => void,
   ) {
     const gl = canvas.getContext("webgl", { antialias: true, alpha: true });
@@ -62,13 +73,15 @@ export class Viewport {
     this.invalidate();
   }
 
-  setModel(blocks: RenderBlock[], bounds: Bounds | null, cutY?: number) {
+  setScene({ blocks, displays, frame, highlight }: ViewportScene) {
     const previous = this.model;
-    this.model = blocks.length ? makeStructure(blocks, { box: bounds ?? undefined, cutY }) : null;
+    this.model = frame ? makeStructure(blocks, frame) : null;
     const { gl, model } = this;
-    if (model && model.visibleBlockCount) {
+    if (model) {
       if (this.renderer) this.renderer.setStructure(model.structure);
       else this.renderer = new ViewerRenderer(gl, model.structure, this.resources);
+      this.renderer.setDisplays(displays, model.origin);
+      this.renderer.setHighlight(highlight, model.origin);
       this.size = Math.max(1, Math.hypot(...model.size));
       if (previous && !this.cameraIsFramed) {
         vec3.add(this.target, this.target, previous.origin);
@@ -167,6 +180,8 @@ export class Viewport {
         renderer?.setProjection(this.projection);
         renderer?.drawGrid(this.view);
         renderer?.drawStructure(this.view);
+        renderer?.drawDisplays(this.view);
+        renderer?.drawHighlight(this.view);
         this.glDirty = false;
       }
 
@@ -174,16 +189,21 @@ export class Viewport {
         const { x, y } = this.pointer;
         const pixelX = Math.floor(x * width / Math.max(1, canvas.clientWidth));
         const pixelY = Math.floor(y * height / Math.max(1, canvas.clientHeight));
-        const position = pixelX >= 0 && pixelX < width && pixelY >= 0 && pixelY < height
+        const picked = pixelX >= 0 && pixelX < width && pixelY >= 0 && pixelY < height
           ? renderer.pick(pixelX, pixelY, width, height, this.view, this.projection)
           : null;
-        const selected = position ? model.structure.getBlock(position) : null;
-        this.onPick(selected ? {
-          state: selected.state.toString(),
-          x: selected.pos[0] + model.origin[0],
-          y: selected.pos[1] + model.origin[1],
-          z: selected.pos[2] + model.origin[2],
-        } : null);
+        if (picked?.kind === "display") {
+          this.onPick(picked);
+        } else {
+          const block = picked ? model.structure.getBlock(picked.position) : null;
+          this.onPick(block ? {
+            kind: "block",
+            state: block.state.toString(),
+            x: block.pos[0] + model.origin[0],
+            y: block.pos[1] + model.origin[1],
+            z: block.pos[2] + model.origin[2],
+          } : null);
+        }
       }
       this.pickDirty = false;
     } catch (error) {

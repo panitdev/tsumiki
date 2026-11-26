@@ -1,14 +1,23 @@
 import { EventEmitter } from "node:events";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { Pool, type PoolClient } from "pg";
-import { blockKey, coordinates, getBounds, type BlockChange, type Blocks, type Box } from "../engine";
+import { blockCount, buildSource, emptyScene, encodeScene, sceneBounds, type Box, type SceneData } from "../engine";
+import { runShell, type ProjectFiles, type ShellResult } from "./shell";
 
-export type StructureInfo = {
+export const SOURCE_FILE = "build.js";
+
+export type ProjectInfo = {
   name: string;
+  /** Bounds and counts describe the last good build. */
   bounds: Box | null;
   blockCount: number;
-  historyDepth: number;
+  displayCount: number;
+  /** The number of undo steps available. */
+  revision: number;
+  /** Increases whenever anything a viewer shows changes. */
   version: number;
+  /** Why the current build.js does not build, or null. */
+  buildError: string | null;
 };
 
 export class ToolError extends Error {
@@ -20,7 +29,7 @@ export class ToolError extends Error {
 export function validateName(name: string): string {
   if (!name.trim() || name.trim() !== name || name.length > 80 || /[\/\\\u0000-\u001f\u007f]/u.test(name) ||
       [".", "..", "api", "_next", "favicon.ico"].includes(name.toLowerCase())) {
-    throw new ToolError("Invalid structure name.", "Use 1–80 characters without slashes, control characters or surrounding whitespace.");
+    throw new ToolError("Invalid project name.", "Use 1–80 characters without slashes, control characters or surrounding whitespace.");
   }
   return name;
 }
@@ -32,29 +41,30 @@ const globals = globalThis as typeof globalThis & {
 };
 export const changeEvents = globals.tsumikiChanges ??= new EventEmitter().setMaxListeners(0);
 
+// The first statement removes the block-map storage of earlier releases, together with its
+// structures. Never reuse those table names: this runs on every start.
 const schema = `
-  CREATE TABLE IF NOT EXISTS tsumiki_structures (
+  DROP TABLE IF EXISTS tsumiki_history, tsumiki_chunks, tsumiki_workspaces, tsumiki_structures;
+  CREATE TABLE IF NOT EXISTS tsumiki_projects (
     name text PRIMARY KEY,
+    files bytea NOT NULL,
+    build bytea NOT NULL,
+    build_error text,
     bounds integer[],
     block_count integer NOT NULL DEFAULT 0,
-    history_depth integer NOT NULL DEFAULT 0,
+    display_count integer NOT NULL DEFAULT 0,
+    revision integer NOT NULL DEFAULT 0,
     version integer NOT NULL DEFAULT 0
   );
-  CREATE TABLE IF NOT EXISTS tsumiki_chunks (
-    name text REFERENCES tsumiki_structures ON DELETE CASCADE,
-    x integer NOT NULL, y integer NOT NULL, z integer NOT NULL,
-    blocks bytea NOT NULL,
-    PRIMARY KEY (name, x, y, z)
+  CREATE TABLE IF NOT EXISTS tsumiki_revisions (
+    project text REFERENCES tsumiki_projects ON DELETE CASCADE,
+    revision integer NOT NULL,
+    source bytea,
+    PRIMARY KEY (project, revision)
   );
-  CREATE TABLE IF NOT EXISTS tsumiki_history (
-    name text REFERENCES tsumiki_structures ON DELETE CASCADE,
-    step integer NOT NULL,
-    changes bytea NOT NULL,
-    PRIMARY KEY (name, step)
-  );
-  CREATE TABLE IF NOT EXISTS tsumiki_workspaces (
+  CREATE TABLE IF NOT EXISTS tsumiki_selections (
     id text PRIMARY KEY,
-    active text NOT NULL REFERENCES tsumiki_structures ON DELETE CASCADE
+    project text NOT NULL REFERENCES tsumiki_projects ON DELETE CASCADE
   );
 `;
 
@@ -83,10 +93,10 @@ async function database(): Promise<Pool> {
   return pool;
 }
 
-async function transaction<T>(write: boolean, action: (client: PoolClient) => Promise<T>): Promise<T> {
+async function transaction<T>(action: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await (await database()).connect();
   try {
-    await client.query(write ? "BEGIN" : "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    await client.query("BEGIN");
     const value = await action(client);
     await client.query("COMMIT");
     return value;
@@ -98,20 +108,8 @@ async function transaction<T>(write: boolean, action: (client: PoolClient) => Pr
   }
 }
 
-const fields = 'name, bounds, block_count AS "blockCount", history_depth AS "historyDepth", version';
-
-function missing(name: string) {
-  return new ToolError(`Structure "${name}" does not exist.`, "Use open to create it or list available names.", 404);
-}
-
-async function structure(client: PoolClient, name: string, lock = false): Promise<StructureInfo> {
-  const result = await client.query<StructureInfo>(`SELECT ${fields} FROM tsumiki_structures WHERE name = $1${lock ? " FOR UPDATE" : ""}`, [name]);
-  if (!result.rows[0]) throw missing(name);
-  return result.rows[0];
-}
-
-type ChunkEntry = [index: number, state: string];
-type Chunk = { x: number; y: number; z: number; blocks: Buffer };
+const fields = `name, bounds, block_count AS "blockCount", display_count AS "displayCount", revision, version,
+  build_error AS "buildError"`;
 
 function encode(value: unknown): Buffer {
   return gzipSync(JSON.stringify(value), { level: 1 });
@@ -121,165 +119,150 @@ function decode<T>(buffer: Buffer): T {
   return JSON.parse(gunzipSync(buffer).toString("utf8")) as T;
 }
 
-function chunkKey(x: number, y: number, z: number) {
-  return blockKey(Math.floor(x / 16), Math.floor(y / 16), Math.floor(z / 16));
+function missing(name: string) {
+  return new ToolError(`Project "${name}" does not exist.`, "Use open to create it or list available names.", 404);
 }
 
-function packChunks(blocks: ReadonlyMap<string, string>, affected?: Set<string>): Chunk[] {
-  const chunks = new Map<string, ChunkEntry[]>();
-  for (const [key, state] of blocks) {
-    const [x, y, z] = coordinates(key);
-    const chunk = chunkKey(x, y, z);
-    if (affected && !affected.has(chunk)) continue;
-    const entry: ChunkEntry = [(x & 15) | ((y & 15) << 4) | ((z & 15) << 8), state];
-    const entries = chunks.get(chunk);
-    if (entries) entries.push(entry);
-    else chunks.set(chunk, [entry]);
-  }
-  return Array.from(chunks, ([key, entries]) => {
-    const [x, y, z] = coordinates(key);
-    return { x, y, z, blocks: encode(entries) };
-  });
+interface Project {
+  info: ProjectInfo;
+  files: ProjectFiles;
+  build: SceneData;
 }
 
-async function loadBlocks(client: PoolClient, name: string): Promise<Blocks> {
-  const { rows } = await client.query<Chunk>("SELECT x,y,z,blocks FROM tsumiki_chunks WHERE name=$1", [name]);
-  const blocks: Blocks = new Map();
-  for (const { x, y, z, blocks: compressed } of rows) {
-    for (const [slot, state] of decode<ChunkEntry[]>(compressed)) {
-      blocks.set(blockKey(x * 16 + (slot & 15), y * 16 + ((slot >> 4) & 15), z * 16 + (slot >> 8)), state);
-    }
-  }
-  return blocks;
+async function lockProject(client: PoolClient, name: string): Promise<Project> {
+  const { rows } = await client.query<ProjectInfo & { files: Buffer; build: Buffer }>(
+    `SELECT ${fields}, files, build FROM tsumiki_projects WHERE name=$1 FOR UPDATE`, [name]);
+  if (!rows[0]) throw missing(name);
+  const { files, build, ...info } = rows[0];
+  return { info, files: decode<ProjectFiles>(files), build: decode<SceneData>(build) };
 }
 
-async function persist(client: PoolClient, info: StructureInfo, blocks: ReadonlyMap<string, string>,
-    affected?: Set<string>): Promise<StructureInfo> {
-  const chunks = affected?.size === 0 ? [] : packChunks(blocks, affected);
-  if (affected?.size) {
-    const positions = [...affected].map(coordinates);
+function sourceOf(files: ProjectFiles): string | null {
+  return Object.hasOwn(files, SOURCE_FILE) ? files[SOURCE_FILE] : null;
+}
+
+/**
+ * Builds the project's current source. A failed build keeps the last good one,
+ * so only the files and the error change.
+ */
+async function rebuild(client: PoolClient, project: Project, files: ProjectFiles, revision: number) {
+  const built = await buildSource(sourceOf(files), project.build);
+  const { name } = project.info;
+  if (built.data) {
     await client.query(`
-      DELETE FROM tsumiki_chunks AS chunk
-      USING unnest($2::integer[], $3::integer[], $4::integer[]) AS affected(x,y,z)
-      WHERE chunk.name=$1 AND (chunk.x,chunk.y,chunk.z)=(affected.x,affected.y,affected.z)
-    `, [info.name, positions.map(p => p[0]), positions.map(p => p[1]), positions.map(p => p[2])]);
+      UPDATE tsumiki_projects SET files=$2, revision=$3, build=$4, build_error=NULL, bounds=$5,
+        block_count=$6, display_count=$7, version=version+1 WHERE name=$1
+    `, [name, encode(files), revision, encode(built.data), sceneBounds(built.data), blockCount(built.data),
+      built.data.instances.reduce((sum, instance) => sum + instance.parts.length, 0)]);
+  } else {
+    await client.query(
+      "UPDATE tsumiki_projects SET files=$2, revision=$3, build_error=$4, version=version+1 WHERE name=$1",
+      [name, encode(files), revision, built.error]);
   }
-  if (chunks.length) {
-    await client.query(`
-      INSERT INTO tsumiki_chunks (name,x,y,z,blocks)
-      SELECT $1,* FROM unnest($2::integer[], $3::integer[], $4::integer[], $5::bytea[])
-    `, [info.name, chunks.map(c => c.x), chunks.map(c => c.y), chunks.map(c => c.z), chunks.map(c => c.blocks)]);
-  }
-  const { rows } = await client.query<StructureInfo>(`
-    UPDATE tsumiki_structures SET bounds=$2, block_count=$3, history_depth=$4, version=version+1
-    WHERE name=$1 RETURNING ${fields}
-  `, [info.name, getBounds(blocks), blocks.size, info.historyDepth]);
-  return rows[0];
+  const { rows } = await client.query<ProjectInfo>(`SELECT ${fields} FROM tsumiki_projects WHERE name=$1`, [name]);
+  return { info: rows[0], report: built.report };
 }
 
-async function rewind(client: PoolClient, info: StructureInfo, blocks: Blocks, steps: number, affected?: Set<string>) {
-  if (steps > info.historyDepth) {
-    throw new ToolError(`Only ${info.historyDepth} build steps are available.`, "Choose a step count within the current history.");
+/** Stores new files, and records a revision and builds when build.js changed. */
+async function update(client: PoolClient, project: Project, files: ProjectFiles) {
+  const source = sourceOf(files);
+  if (source === sourceOf(project.files)) {
+    await client.query("UPDATE tsumiki_projects SET files=$2 WHERE name=$1", [project.info.name, encode(files)]);
+    return;
   }
-  if (steps === 0) return;
-  const { rows } = await client.query<{ changes: Buffer }>(`
-    SELECT changes FROM tsumiki_history WHERE name=$1 AND step>$2 ORDER BY step DESC
-  `, [info.name, info.historyDepth - steps]);
-  for (const row of rows) {
-    for (const { x, y, z, before } of decode<BlockChange[]>(row.changes)) {
-      affected?.add(chunkKey(x, y, z));
-      const key = blockKey(x, y, z);
-      if (before === "air") blocks.delete(key);
-      else blocks.set(key, before);
-    }
-  }
+  const revision = project.info.revision + 1;
+  await client.query("INSERT INTO tsumiki_revisions (project,revision,source) VALUES ($1,$2,$3)",
+    [project.info.name, revision, source === null ? null : encode(source)]);
+  return rebuild(client, project, files, revision);
 }
 
-export async function listStructures(): Promise<StructureInfo[]> {
-  const { rows } = await (await database()).query<StructureInfo>(`SELECT ${fields} FROM tsumiki_structures ORDER BY name`);
+function announce(info: ProjectInfo | undefined) {
+  if (info) changeEvents.emit(info.name, info.version);
+}
+
+export async function listProjects(): Promise<ProjectInfo[]> {
+  const { rows } = await (await database()).query<ProjectInfo>(`SELECT ${fields} FROM tsumiki_projects ORDER BY name`);
   return rows;
 }
 
-export async function getStructureInfo(name: string): Promise<StructureInfo> {
-  const { rows } = await (await database()).query<StructureInfo>(`SELECT ${fields} FROM tsumiki_structures WHERE name=$1`, [name]);
+export async function getProjectInfo(name: string): Promise<ProjectInfo> {
+  const { rows } = await (await database()).query<ProjectInfo>(`SELECT ${fields} FROM tsumiki_projects WHERE name=$1`, [name]);
   if (!rows[0]) throw missing(name);
   return rows[0];
 }
 
-export async function openStructure(name: string, workspace: string, from?: () => Promise<Blocks>) {
+/** The last good build, read together with the information that describes it. */
+export async function lastBuild(name: string): Promise<{ info: ProjectInfo; build: SceneData }> {
+  const { rows } = await (await database()).query<ProjectInfo & { build: Buffer }>(
+    `SELECT ${fields}, build FROM tsumiki_projects WHERE name=$1`, [name]);
+  if (!rows[0]) throw missing(name);
+  const { build, ...info } = rows[0];
+  return { info, build: decode<SceneData>(build) };
+}
+
+/** Selects a project for the workspace, creating it if new. Reset empties build.js as one undoable step. */
+export async function openProject(name: string, workspace: string, reset = false) {
   validateName(name);
-  return transaction(true, async (client) => {
-    const { rowCount } = await client.query("INSERT INTO tsumiki_structures (name) VALUES ($1) ON CONFLICT DO NOTHING", [name]);
-    let info = await structure(client, name, true);
-    if (!rowCount && from) throw new ToolError(`Structure "${name}" already exists.`, "Import into a new name or omit from to open the existing structure.", 409);
-    const blocks = from ? await from() : await loadBlocks(client, name);
-    if (from) info = await persist(client, info, blocks);
-    await client.query(`
-      INSERT INTO tsumiki_workspaces (id, active) VALUES ($1,$2)
-      ON CONFLICT (id) DO UPDATE SET active=excluded.active
-    `, [workspace, name]);
-    return { info, blocks };
-  });
-}
-
-export async function activeStructure(workspace: string): Promise<string> {
-  const { rows } = await (await database()).query<{ active: string }>("SELECT active FROM tsumiki_workspaces WHERE id=$1", [workspace]);
-  if (!rows[0]) throw new ToolError("No structure is open.", "Call open with a structure name first.");
-  return rows[0].active;
-}
-
-export async function snapshot(name: string, undo = 0) {
-  return transaction(false, async (client) => {
-    const info = await structure(client, name);
-    const blocks = await loadBlocks(client, name);
-    await rewind(client, info, blocks, undo);
-    if (undo) {
-      info.bounds = getBounds(blocks);
-      info.blockCount = blocks.size;
+  const result = await transaction(async (client) => {
+    const files: ProjectFiles = { [SOURCE_FILE]: "" };
+    const { rowCount } = await client.query(
+      "INSERT INTO tsumiki_projects (name,files,build) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+      [name, encode(files), encode(encodeScene(emptyScene()))]);
+    if (rowCount) {
+      await client.query("INSERT INTO tsumiki_revisions (project,revision,source) VALUES ($1,0,$2)", [name, encode("")]);
     }
-    return { info, blocks };
+    const project = await lockProject(client, name);
+    const changed = reset ? await update(client, project, files) : undefined;
+    await client.query(`
+      INSERT INTO tsumiki_selections (id, project) VALUES ($1,$2)
+      ON CONFLICT (id) DO UPDATE SET project=excluded.project
+    `, [workspace, name]);
+    return { info: changed?.info ?? project.info, created: Boolean(rowCount), report: changed?.report, changed };
   });
-}
-
-export async function buildStructure<T>(name: string, build: (blocks: Blocks) => Promise<{
-  result: T;
-  updated?: { blocks: Blocks; changes: BlockChange[] };
-}>): Promise<T> {
-  const { result, info } = await transaction(true, async (client) => {
-    const info = await structure(client, name, true);
-    const { result, updated } = await build(await loadBlocks(client, name));
-    if (!updated) return { result };
-    info.historyDepth++;
-    await client.query("INSERT INTO tsumiki_history (name,step,changes) VALUES ($1,$2,$3)", [name, info.historyDepth, encode(updated.changes)]);
-    const affected = new Set<string>();
-    for (const { x, y, z } of updated.changes) affected.add(chunkKey(x, y, z));
-    return { result, info: await persist(client, info, updated.blocks, affected) };
-  });
-  if (info) changeEvents.emit(name, info.version);
+  announce(result.changed?.info);
   return result;
 }
 
-export async function undoStructure(name: string, steps: number): Promise<StructureInfo> {
-  const info = await transaction(true, async (client) => {
-    const info = await structure(client, name, true);
-    const blocks = await loadBlocks(client, name);
-    const affected = new Set<string>();
-    await rewind(client, info, blocks, steps, affected);
-    info.historyDepth -= steps;
-    await client.query("DELETE FROM tsumiki_history WHERE name=$1 AND step>$2", [name, info.historyDepth]);
-    return persist(client, info, blocks, affected);
+export async function activeProject(workspace: string): Promise<string> {
+  const { rows } = await (await database()).query<{ project: string }>(
+    "SELECT project FROM tsumiki_selections WHERE id=$1", [workspace]);
+  if (!rows[0]) throw new ToolError("No project is open.", "Call open with a project name first.");
+  return rows[0].project;
+}
+
+/** Runs a shell command over the project and builds if build.js changed. Calls on a project run one at a time. */
+export async function runCommand(name: string, command: string): Promise<ShellResult & { report?: string }> {
+  const result = await transaction(async (client) => {
+    const project = await lockProject(client, name);
+    const shell = await runShell(project.files, command);
+    const built = shell.files ? await update(client, project, shell.files) : undefined;
+    return { ...shell, report: built?.report, info: built?.info };
   });
-  changeEvents.emit(name, info.version);
-  return info;
+  announce(result.info);
+  return result;
+}
+
+export async function undo(name: string, steps: number) {
+  const result = await transaction(async (client) => {
+    const project = await lockProject(client, name);
+    const { revision } = project.info;
+    if (steps > revision) {
+      throw new ToolError(`Only ${revision} earlier revision${revision === 1 ? " is" : "s are"} available.`,
+        "Choose a step count within the current history.");
+    }
+    const target = revision - steps;
+    const { rows } = await client.query<{ source: Buffer | null }>(
+      "SELECT source FROM tsumiki_revisions WHERE project=$1 AND revision=$2", [name, target]);
+    const files = { ...project.files };
+    if (rows[0].source) files[SOURCE_FILE] = decode<string>(rows[0].source);
+    else delete files[SOURCE_FILE];
+    await client.query("DELETE FROM tsumiki_revisions WHERE project=$1 AND revision>$2", [name, target]);
+    return rebuild(client, project, files, target);
+  });
+  announce(result.info);
+  return result;
 }
 
 export async function checkDatabase() {
   await (await database()).query("SELECT 1");
-}
-
-export function* blockEntries(blocks: ReadonlyMap<string, string>) {
-  for (const [key, state] of blocks) {
-    const [x, y, z] = coordinates(key);
-    yield { x, y, z, state };
-  }
 }

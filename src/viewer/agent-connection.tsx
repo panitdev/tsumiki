@@ -85,7 +85,7 @@ export function AgentConnection({ oauth = false, publicEndpoint }: { oauth?: boo
           <>
             <p>
               ChatGPT&apos;s connectors can read remote servers but only run search and fetch —
-              they cannot call Tsumiki&apos;s build tool, so it&apos;s not usable as a connector yet.
+              they cannot call Tsumiki&apos;s bash tool, so it&apos;s not usable as a connector yet.
             </p>
             {url}
           </>

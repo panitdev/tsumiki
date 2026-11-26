@@ -19,18 +19,18 @@ export const handlers = [
       { headers: { "Cache-Control": "no-store" } },
     )),
 
-  http.get("*/api/structures/:name", async ({ params, request }) => {
+  http.get("*/api/structures/:name", async ({ params }) => {
     const name = String(params.name);
     if (failingStructures.has(name)) {
       await delay(120);
       return snapshotResponse(null, "The builder agent lost this structure.");
     }
-    const undo = Number(new URL(request.url).searchParams.get("undo") ?? 0);
-    if (!Number.isSafeInteger(undo) || undo < 0) {
-      return snapshotResponse(null, "Invalid undo step.");
-    }
-    return snapshotResponse(findSnapshot(name, undo));
+    return snapshotResponse(findSnapshot(name));
   }),
+
+  http.get("*/api/structures/:name/export", () => new HttpResponse("mock export", {
+    headers: { "Content-Type": "application/octet-stream" },
+  })),
 
   // Live updates: the hook reloads the snapshot when the version changes.
   sse<{ change: string }>("*/api/structures/:name/events", ({ client }) => {

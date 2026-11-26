@@ -3,7 +3,9 @@ import {
   BlockModel,
   BlockState,
   ChunkBuilder,
+  Cull,
   Identifier,
+  Mesh,
   Renderer,
   SpecialRenderers,
   TextureAtlas,
@@ -15,21 +17,15 @@ import {
   type StructureProvider,
   type UV,
 } from "deepslate/render";
+import { Vector } from "deepslate/math";
 import { mat4 } from "gl-matrix";
-
-export const views = ["iso_ne", "iso_nw", "iso_se", "iso_sw", "top", "north", "south", "east", "west"] as const;
-export type View = (typeof views)[number];
+import type { VisibleDisplay } from "../engine/visibility";
 
 export interface RenderBlock {
   x: number;
   y: number;
   z: number;
   state: string;
-}
-
-export interface RenderRegion {
-  box?: readonly [number, number, number, number, number, number];
-  cutY?: number;
 }
 
 export interface RenderAssetData {
@@ -46,35 +42,11 @@ const MISSING_MODEL = "tsumiki:block/missing";
 const MODEL_NAMESPACE = "tsumiki_model";
 const FACES = ["north", "south", "east", "west", "up", "down"];
 
-export function makeStructure(blocks: Iterable<RenderBlock>, { box, cutY }: RenderRegion = {}) {
-  const min: BlockPos = box
-    ? [Math.min(box[0], box[3]), Math.min(box[1], box[4]), Math.min(box[2], box[5])]
-    : [Infinity, Infinity, Infinity];
-  const max: BlockPos = box
-    ? [Math.max(box[0], box[3]), Math.max(box[1], box[4]), Math.max(box[2], box[5])]
-    : [-Infinity, -Infinity, -Infinity];
-  const visible: RenderBlock[] = [];
-
-  for (const block of blocks) {
-    const { x, y, z, state } = block;
-    if ((cutY !== undefined && y > cutY) || AIR.has(state)) continue;
-    if (box) {
-      if (x < min[0] || x > max[0] || y < min[1] || y > max[1] || z < min[2] || z > max[2]) continue;
-    } else {
-      min[0] = Math.min(min[0], x);
-      min[1] = Math.min(min[1], y);
-      min[2] = Math.min(min[2], z);
-      max[0] = Math.max(max[0], x);
-      max[1] = Math.max(max[1], y);
-      max[2] = Math.max(max[2], z);
-    }
-    visible.push(block);
-  }
-
-  const origin: BlockPos = Number.isFinite(min[0]) ? min : [0, 0, 0];
-  const size: BlockPos = Number.isFinite(max[0])
-    ? [max[0] - min[0] + 1, max[1] - min[1] + 1, max[2] - min[2] + 1]
-    : [0, 0, 0];
+/** Shifts blocks so that the structure starts at `box`'s minimum corner, which keeps GPU coordinates small. */
+export function makeStructure(blocks: readonly RenderBlock[], box: readonly [number, number, number, number, number, number] | null) {
+  const origin: BlockPos = box ? [box[0], box[1], box[2]] : [0, 0, 0];
+  const size: BlockPos = box ? [box[3] - box[0] + 1, box[4] - box[1] + 1, box[5] - box[2] + 1] : [0, 0, 0];
+  const visible = blocks.filter(({ state }) => !AIR.has(state));
   const states = new Map<string, BlockState>();
   const placed: PlacedBlock[] = [];
   const byPosition = new Map<number | string, PlacedBlock>();
@@ -260,8 +232,53 @@ class ClientBlockModel extends BlockModel {
   }
 }
 
+/** deepslate indexes vertices with 16 bits, which bounds each mesh. */
+const MAX_QUADS = 8_000;
+
+function determinant(m: readonly number[]) {
+  return m[0] * (m[5] * m[10] - m[6] * m[9]) - m[4] * (m[1] * m[10] - m[2] * m[9]) + m[8] * (m[1] * m[6] - m[2] * m[5]);
+}
+
+function makeDisplayMeshes(gl: WebGLRenderingContext, displays: readonly VisibleDisplay[], origin: BlockPos,
+    resources: MinecraftResources): Mesh[] {
+  const meshes: Mesh[] = [];
+  let batch = new Mesh();
+  for (const { block, matrix, instance } of displays) {
+    const parsed = BlockState.parse(block);
+    const id = parsed.getName();
+    const name = resources.modelOnly?.has(id.toString()) ? new Identifier(MODEL_NAMESPACE, id.path) : id;
+    const properties = { ...resources.getDefaultBlockProperties(name), ...parsed.getProperties() };
+    const mesh = new Mesh();
+    try {
+      const definition = resources.getBlockDefinition(name);
+      if (definition) mesh.merge(definition.getMesh(name, properties, resources, resources, Cull.none()));
+      mesh.merge(SpecialRenderers.getBlockMesh(new BlockState(name, properties), undefined, resources, Cull.none()));
+    } catch (error) {
+      console.error(`Error rendering block display ${block}`, error);
+      continue;
+    }
+    const placed = [...matrix];
+    for (let axis = 0; axis < 3; axis++) placed[12 + axis] -= origin[axis];
+    mesh.transform(placed as unknown as mat4);
+    // A mirrored transform turns faces inside out.
+    if (determinant(placed) < 0) for (const quad of mesh.quads) quad.reverse();
+    mesh.computeNormals();
+    // The viewer's picking pass reads this back as the instance.
+    for (const quad of mesh.quads) quad.forEach(vertex => vertex.blockPos = new Vector(instance, 0, 0));
+    if (batch.quads.length && batch.quads.length + mesh.quads.length > MAX_QUADS) {
+      meshes.push(batch);
+      batch = new Mesh();
+    }
+    for (const quad of mesh.quads) batch.quads.push(quad);
+  }
+  if (batch.quads.length) meshes.push(batch);
+  for (const mesh of meshes) mesh.rebuild(gl, { pos: true, color: true, texture: true, normal: true, blockPos: true });
+  return meshes;
+}
+
 export class MinecraftRenderer extends Renderer {
   protected chunkBuilder: ChunkBuilder;
+  protected displayMeshes: Mesh[] = [];
   private readonly atlasTexture: WebGLTexture;
 
   constructor(gl: WebGLRenderingContext, structure: StructureProvider, private readonly resources: MinecraftResources) {
@@ -300,6 +317,22 @@ export class MinecraftRenderer extends Renderer {
     this.chunkBuilder = new ChunkBuilder(this.gl, renderModels(structure, this.resources.modelOnly), this.resources, 8);
   }
 
+  /** Block displays are separate meshes, so they take no part in the grid's face culling. */
+  setDisplays(displays: readonly VisibleDisplay[], origin: BlockPos) {
+    this.releaseBuffers(this.displayMeshes);
+    this.displayMeshes = makeDisplayMeshes(this.gl, displays, origin, this.resources);
+  }
+
+  drawDisplays(view: mat4) {
+    if (!this.displayMeshes.length) return;
+    this.setShader(this.shaderProgram);
+    this.bindAtlas();
+    this.prepareDraw(view);
+    for (const mesh of this.displayMeshes) {
+      this.drawMesh(mesh, { pos: true, color: true, texture: true, normal: true });
+    }
+  }
+
   protected bindAtlas() {
     this.setTexture(this.atlasTexture, this.resources.getPixelSize?.());
   }
@@ -315,13 +348,18 @@ export class MinecraftRenderer extends Renderer {
 
   dispose() {
     this.releaseMeshes();
+    this.releaseBuffers(this.displayMeshes);
     this.gl.deleteTexture(this.atlasTexture);
     for (const shader of this.gl.getAttachedShaders(this.shaderProgram) ?? []) this.gl.deleteShader(shader);
     this.gl.deleteProgram(this.shaderProgram);
   }
 
   private releaseMeshes() {
-    for (const mesh of this.chunkBuilder.getMeshes()) {
+    this.releaseBuffers(this.chunkBuilder.getMeshes());
+  }
+
+  private releaseBuffers(meshes: Mesh[]) {
+    for (const mesh of meshes) {
       for (const buffer of [mesh.posBuffer, mesh.colorBuffer, mesh.textureBuffer, mesh.textureLimitBuffer,
         mesh.normalBuffer, mesh.blockPosBuffer, mesh.indexBuffer, mesh.linePosBuffer, mesh.lineColorBuffer]) {
         if (buffer) this.gl.deleteBuffer(buffer);

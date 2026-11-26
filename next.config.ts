@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const config: NextConfig = {
-  serverExternalPackages: ["gl", "quickjs-emscripten"],
+  serverExternalPackages: ["@everruns/bashkit", "gl", "quickjs-emscripten"],
   poweredByHeader: false,
   agentRules: false,
   turbopack: {

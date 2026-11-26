@@ -1,4 +1,4 @@
-import { changeEvents, getStructureInfo, ToolError, validateName } from "@/src/server/store";
+import { changeEvents, getProjectInfo, ToolError, validateName } from "@/src/server/store";
 import { viewerAccess, viewerUnauthorized } from "@/src/server/viewer-access";
 
 export const dynamic = "force-dynamic";
@@ -8,7 +8,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ stru
   const { structure } = await params;
   let initial: number;
   try {
-    initial = (await getStructureInfo(validateName(structure))).version;
+    initial = (await getProjectInfo(validateName(structure))).version;
   } catch (error) {
     if (error instanceof ToolError) return new Response(error.message, { status: error.status });
     throw error;
@@ -39,7 +39,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ stru
       if (request.signal.aborted) { onAbort(); return; }
       send(initial);
       // A commit could have happened between the first query and registering this listener.
-      void getStructureInfo(structure).then((info) => send(info.version), () => {});
+      void getProjectInfo(structure).then((info) => send(info.version), () => {});
     },
     cancel() { cleanup(); },
   });

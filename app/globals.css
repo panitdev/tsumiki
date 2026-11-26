@@ -368,7 +368,29 @@ body {
   font-size: 13px;
 }
 
-.history-error { margin-top: 8px; color: var(--destructive); font-size: 12px; }
+.control-error { margin-top: 8px; color: var(--destructive); font-size: 12px; overflow-wrap: anywhere; }
+.block-group { color: var(--primary); font-size: 12px; }
+
+.group-tree { max-height: 280px; margin-top: 8px; overflow: auto; font-size: 12px; }
+.tree-row { display: flex; align-items: center; gap: 2px; min-height: 26px; border-radius: 5px; }
+.tree-row[data-selected="true"] { background: var(--muted); }
+.tree-row[data-hidden="true"] .tree-label { opacity: 0.45; }
+.tree-label { display: flex; flex: 1; min-width: 0; align-items: baseline; gap: 6px; text-align: left; cursor: pointer; }
+.tree-label > span, .tree-label > small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-label > span { flex: 0 1 auto; }
+.tree-label > small { flex: 0 100 auto; color: var(--muted-foreground); font-size: 11px; }
+.tree-button { display: inline-grid; flex: none; place-items: center; width: 22px; height: 22px; border-radius: 4px; color: var(--muted-foreground); }
+button.tree-button { cursor: pointer; }
+button.tree-button[aria-pressed="true"] { color: var(--primary); }
+
+.download { display: grid; gap: 9px; justify-items: start; }
+.download .control-heading { justify-self: stretch; }
+.download-fields { display: flex; flex-wrap: wrap; gap: 8px; }
+.download-fields label { display: grid; gap: 3px; color: var(--muted-foreground); font-size: 11px; }
+.download-fields select, .download-fields input {
+  width: 112px; height: 29px; padding-inline: 7px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--card); color: var(--foreground); font-size: 12px;
+}
 .spin { animation: viewer-spin 900ms linear infinite; }
 
 @keyframes viewer-spin { to { transform: rotate(360deg); } }
@@ -377,7 +399,7 @@ body {
   .viewer-layout { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .viewer-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .control-section:nth-child(2) { border-top: 0; border-left: 1px solid var(--border); }
-  .inspector { grid-column: 1 / -1; min-height: 103px; }
+  .inspector { min-height: 103px; }
   .viewport { height: clamp(285px, 53dvh, 600px); }
 }
 

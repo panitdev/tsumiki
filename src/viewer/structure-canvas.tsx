@@ -5,7 +5,7 @@ import { Box, LoaderCircle, Maximize, Minus, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { makeResources, type RenderAssetData } from "../render/shared";
 import { getJson, type StructureSnapshot } from "./data";
-import { Viewport, type InspectedBlock } from "./viewport";
+import { Viewport, type Inspected, type ViewportScene } from "./viewport";
 
 let assetsRequest: Promise<ReturnType<typeof makeResources>> | null = null;
 
@@ -30,20 +30,20 @@ function renderError(error: unknown) {
 
 interface StructureCanvasProps {
   snapshot: StructureSnapshot | null;
-  cutY?: number;
+  scene: ViewportScene | null;
   requestError: string | null;
-  onPick: (block: InspectedBlock | null) => void;
+  onPick: (picked: Inspected | null) => void;
   onRetry: () => void;
 }
 
-export function StructureCanvas({ snapshot, cutY, requestError, onPick, onRetry }: StructureCanvasProps) {
+export function StructureCanvas({ snapshot, scene, requestError, onPick, onRetry }: StructureCanvasProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const viewport = useRef<Viewport | null>(null);
   const [assets, setAssets] = useState<ReturnType<typeof makeResources> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lost, setLost] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const hasBlocks = Boolean(snapshot?.blockCount);
+  const hasBlocks = Boolean(snapshot?.blockCount || snapshot?.displayCount);
 
   useEffect(() => {
     if (!hasBlocks) return;
@@ -82,13 +82,13 @@ export function StructureCanvas({ snapshot, cutY, requestError, onPick, onRetry 
   }, [assets, attempt, lost, onPick]);
 
   useEffect(() => {
-    if (!snapshot) return;
+    if (!scene) return;
     try {
-      viewport.current?.setModel(snapshot.blocks, snapshot.bounds, cutY);
+      viewport.current?.setScene(scene);
     } catch (reason) {
       setError(renderError(reason));
     }
-  }, [snapshot, cutY, assets, attempt, lost]);
+  }, [scene, assets, attempt, lost]);
 
   const sceneError = snapshot ? (hasBlocks ? error : null) : requestError;
   const busy = !sceneError && (!snapshot || (hasBlocks && !assets));

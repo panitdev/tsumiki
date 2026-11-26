@@ -1,24 +1,27 @@
-import type { RenderBlock } from "../render/shared";
-
-export type Bounds = [number, number, number, number, number, number];
+import type { Box } from "../engine/geometry";
+import type { SceneData } from "../engine/scene";
 
 export interface StructureSummary {
   name: string;
-  bounds: Bounds | null;
+  /** Bounds and counts describe the last good build. */
+  bounds: Box | null;
   blockCount: number;
-  historyDepth: number;
+  displayCount: number;
+  revision: number;
   version: number;
+  /** Why the current build.js does not build, or null. */
+  buildError: string | null;
 }
 
 export interface StructureSnapshot extends StructureSummary {
-  blocks: RenderBlock[];
+  build: SceneData;
 }
 
 export function structurePath(name: string) {
   return `/${encodeURIComponent(name)}`;
 }
 
-export function formatDimensions(bounds: Bounds | null) {
+export function formatDimensions(bounds: Box | null) {
   if (!bounds) return "—";
   return [bounds[3] - bounds[0] + 1, bounds[4] - bounds[1] + 1, bounds[5] - bounds[2] + 1].join(" × ");
 }

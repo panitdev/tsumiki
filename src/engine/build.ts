@@ -1,473 +1,450 @@
-import { randomInt } from "node:crypto";
-import { getQuickJS, type QuickJSContext, type QuickJSHandle } from "quickjs-emscripten";
+import { DefaultIntrinsics, getQuickJS, type QuickJSContext, type QuickJSHandle } from "quickjs-emscripten";
+import { bootstrap } from "./bootstrap";
+import { BlockValidationError, UnknownBlockError, isAir, normalizeBlock, turnBlock } from "./catalog";
+import { normalizeBox, type Box, type Position } from "./geometry";
 import {
-  BlockValidationError, UnknownBlockError, blockFamily, isAir, normalizeBlock, turnBlock,
-  type TurnOptions,
-} from "./catalog";
-import {
-  blockKey, coordinates, floatingGroups, getBounds, normalizeBox,
-  type BlockChange, type Blocks, type Box, type FloatingGroup, type Position,
-} from "./geometry";
+  compose, flatten, identity, object, parseParts, parseTags, parseTransform, unknownModel, validateModel,
+  type Model,
+} from "./models";
+import { groupRandom } from "./random";
+import { ROOT_LABEL, emptyScene, groupBounds, groupPath, instanceBounds, type Scene } from "./scene";
+import { SelectorError, explainEmpty, select, type Selection } from "./selector";
+import { WorldTooSparseError } from "./world";
 
+export const MAX_SOURCE_BYTES = 262_144;
 const MAX_WRITES = 2_000_000;
 const TIME_LIMIT = 10_000;
 const MAX_COORDINATE = 30_000_000;
-const MAX_CODE_LENGTH = 262_144;
-const MAX_BLOCK_LENGTH = 4_096;
-const WARNING_LIMIT = 20;
+const MAX_STRING = 4_096;
+const MAX_DATA = 262_144;
+const MAX_GROUPS = 10_000;
+const MAX_MODELS = 1_000;
+const MAX_INSTANCES = 10_000;
+const MAX_DISPLAY_PARTS = 20_000;
+const MAX_MODEL_NODES = 200_000;
+const MAX_SELECTIONS = 10_000;
 const MAX_LOGS = 100;
+const WARNING_LIMIT = 20;
 const SCRIPT_FILENAME = "build.js";
 
-type BuildWarning =
-  | { type: "unknown_block"; block: string; count: number; suggestions: string[]; message: string }
-  | ({ type: "floating"; message: string } & FloatingGroup)
-  | { type: "more_warnings"; message: string };
-
-export interface BuildOptions {
-  code: string;
-  seed?: number;
+export interface BuildFailure {
+  ok: false;
+  error: string;
+  line?: number;
+  logs: string[];
 }
 
-export type BuildSuccess = {
+export interface BuildSuccess {
   ok: true;
-  summary: string;
-  blocks: Blocks;
-  changes: BlockChange[];
-  placed: number;
-  removed: number;
-  bounds: Box | null;
+  scene: Scene;
   logs: string[];
-  warnings: BuildWarning[];
-  seed: number;
-};
-
-export type BuildFailure = {
-  ok: false;
-  summary: string;
-  error: string;
-  hint: string;
-  line?: number;
-};
+  warnings: string[];
+}
 
 export type BuildResult = BuildSuccess | BuildFailure;
-
-function failure(error: string, hint: string, line?: number): BuildFailure {
-  return {
-    ok: false,
-    summary: line ? `Build failed on line ${line}.` : "Build failed.",
-    error,
-    hint,
-    ...(line ? { line } : {}),
-  };
-}
-
-function seededRandom(seed: number): () => number {
-  let state = (seed >>> 0) ^ (Math.floor(seed / 0x100000000) >>> 0);
-  return () => {
-    state = (state + 0x6D2B79F5) | 0;
-    let result = Math.imul(state ^ (state >>> 15), state | 1);
-    result ^= result + Math.imul(result ^ (result >>> 7), result | 61);
-    return ((result ^ (result >>> 14)) >>> 0) / 0x100000000;
-  };
-}
-
-interface MixChoice {
-  block: string;
-  weight: number;
-  weightText?: string;
-}
-
-function splitMix(input: string): MixChoice[] {
-  const parts: string[] = [];
-  let start = 0;
-  let depth = 0;
-  for (let i = 0; i < input.length; i++) {
-    if (input[i] === "[") depth++;
-    if (input[i] === "]") depth--;
-    if (input[i] === "," && depth === 0) {
-      parts.push(input.slice(start, i));
-      start = i + 1;
-    }
-  }
-  parts.push(input.slice(start));
-  return parts.map((part) => {
-    const [block, weightText, ...extra] = part.trim().split("*").map((value) => value.trim());
-    const weight = weightText === undefined ? 1 : Number(weightText);
-    if (!block || extra.length || !Number.isFinite(weight) || weight <= 0 ||
-      (weightText !== undefined && !/^(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(weightText))) {
-      throw new BlockValidationError("Invalid block mix.", 'Use positive weights as in "stone_bricks*6,mossy_stone_bricks*2".');
-    }
-    return { block, weight, weightText };
-  });
-}
-
-interface Selection {
-  block: string | UnknownBlockError;
-  until: number;
-}
-
-function compileMix(input: string): Selection[] {
-  let total = 0;
-  return splitMix(input).map((choice) => {
-    total += choice.weight;
-    if (!Number.isFinite(total)) {
-      throw new BlockValidationError("Block mix weights are too large.", "Use smaller weights in the same proportion.");
-    }
-    let block: string | UnknownBlockError;
-    try {
-      const normalized = normalizeBlock(choice.block);
-      block = isAir(normalized) ? "air" : normalized;
-    } catch (error) {
-      if (!(error instanceof UnknownBlockError)) throw error;
-      block = error;
-    }
-    return { block, until: total };
-  });
-}
-
-function chooseBlock(selection: Selection[], random: () => number): string | UnknownBlockError {
-  if (selection.length === 1) return selection[0].block;
-  const target = random() * selection[selection.length - 1].until;
-  return (selection.find(({ until }) => target < until) ?? selection[selection.length - 1]).block;
-}
-
-const bootstrap = `
-  ((applyTurn, appendLog, rand) => {
-    delete globalThis.__applyTurn;
-    delete globalThis.__appendLog;
-    const serialize = JSON.stringify;
-    const text = String;
-    const slice = Function.call.bind(String.prototype.slice);
-    const replaceAll = Function.call.bind(String.prototype.replaceAll);
-    const isArray = Array.isArray;
-    const log = (...args) => {
-      let line = "";
-      for (let i = 0; i < args.length && line.length < 1024; i++) {
-        let arg;
-        try {
-          arg = typeof args[i] === "string" ? args[i] : serialize(args[i]);
-        } catch {
-          arg = "[unserializable]";
-        }
-        if (i) line += " ";
-        line += slice(arg ?? text(args[i]), 0, 1024 - line.length);
-      }
-      appendLog(slice(replaceAll(line, "\\0", "\\\\0"), 0, 1024));
-    };
-    const turn = (block, options = {}) => {
-      if (!options || typeof options !== "object" || isArray(options)) {
-        throw new TypeError('turn expects options such as {rotate: 90} or {mirror: "x"}.');
-      }
-      const { rotate, mirror } = options;
-      if (mirror !== undefined && mirror !== "x" && mirror !== "z") {
-        throw new TypeError('Set mirror to "x" or "z".');
-      }
-      return typeof block === "function"
-        ? (x, y, z) => applyTurn(block(x, y, z), rotate, mirror)
-        : applyTurn(block, rotate, mirror);
-    };
-    Object.assign(globalThis, { log, turn });
-    Math.random = rand;
-    return (error) => {
-      const message = typeof error === "string" ? error : error?.message;
-      const stack = error?.stack;
-      const hint = error?.hint;
-      return [
-        typeof message === "string" ? slice(message, 0, 4096) : "The script threw an exception.",
-        typeof stack === "string" ? slice(stack, 0, 4096) : "",
-        typeof hint === "string" ? slice(hint, 0, 4096) : "",
-      ];
-    };
-  })(__applyTurn, __appendLog, rand)
-`;
 
 function lineNumber(stack: string): number | undefined {
   const frame = /\bbuild\.js:(\d+)/.exec(stack);
   return frame ? Number(frame[1]) : undefined;
 }
 
-function guestFailure(vm: QuickJSContext, describe: QuickJSHandle, exception: QuickJSHandle): BuildFailure {
-  const detail = vm.callFunction(describe, vm.undefined, exception);
-  const defaultHint = "Fix the JavaScript on the indicated line and run the build again.";
-  if (detail.error) {
-    detail.error.dispose();
-    return failure("The script threw an exception.", defaultHint);
-  }
-  return detail.value.consume((value) => {
-    const error = vm.getProp(value, 0).consume((part) => vm.getString(part));
-    const stack = vm.getProp(value, 1).consume((part) => vm.getString(part));
-    const hint = vm.getProp(value, 2).consume((part) => vm.getString(part));
-    return failure(error, hint || defaultHint, lineNumber(stack));
-  });
+function sentence(message: string, hint: string): string {
+  return hint ? `${message.replace(/[.\s]+$/, "")}. ${hint}` : message;
 }
 
-interface UnknownPlacements {
-  blocks: Map<string, { error: UnknownBlockError; count: number }>;
-  omitted: number;
+function describeError(error: BlockValidationError | SelectorError): { message: string; hint: string } {
+  if (error instanceof UnknownBlockError) {
+    const [best] = error.suggestions;
+    return { message: `unknown block "${error.block}"${best ? `, did you mean "${best}"?` : ""}`, hint: "" };
+  }
+  return { message: error.message, hint: error.hint };
 }
 
-function buildWarnings(blocks: Blocks, bounds: Box | null, unknown: UnknownPlacements): BuildWarning[] {
-  const warnings: BuildWarning[] = [...unknown.blocks].map(([block, { error, count }]) => ({
-    type: "unknown_block",
-    block,
-    count,
-    message: error.message,
-    suggestions: error.suggestions,
-  }));
-  const floating = floatingGroups(blocks, bounds, WARNING_LIMIT);
-  for (const group of floating.groups) {
-    warnings.push({
-      type: "floating",
-      ...group,
-      message: `${group.blockCount} floating block${group.blockCount === 1 ? "" : "s"} with no face connection to the lowest layer.`,
-    });
+/** Runs build.js from scratch. The result depends only on the source. */
+export async function runBuild(source: string): Promise<BuildResult> {
+  const logs: string[] = [];
+  if (Buffer.byteLength(source) > MAX_SOURCE_BYTES) {
+    return { ok: false, error: `build.js is larger than ${MAX_SOURCE_BYTES} bytes. Use loops and functions to shorten it.`, logs };
   }
-  if (unknown.omitted) {
-    warnings.push({
-      type: "more_warnings",
-      message: `Skipped ${unknown.omitted} additional placements with unknown IDs.`,
-    });
-  }
-  if (floating.count > floating.groups.length) {
-    warnings.push({
-      type: "more_warnings",
-      message: `Found ${floating.count - floating.groups.length} additional floating groups.`,
-    });
-  }
-  return warnings;
-}
-
-export async function runBuild(initial: ReadonlyMap<string, string>, options: BuildOptions): Promise<BuildResult> {
-  const { code, seed = randomInt(0, 0x100000000) } = options;
-  if (code.length > MAX_CODE_LENGTH) return failure("The script is too long.", "Split it into smaller builds.");
-  if (!Number.isSafeInteger(seed)) return failure("Invalid seed.", "Use a safe integer seed.");
 
   const QuickJS = await getQuickJS();
   const runtime = QuickJS.newRuntime();
   runtime.setMemoryLimit(64 * 1024 * 1024);
   runtime.setMaxStackSize(512 * 1024);
+  // Promise stays an intrinsic: QuickJS aborts on async syntax without it.
+  const vm = runtime.newContext({ intrinsics: { ...DefaultIntrinsics, Date: false } });
 
-  const blocks = new Map(initial);
-  const random = seededRandom(seed);
-  const logs: string[] = [];
-  const unknown: UnknownPlacements = { blocks: new Map(), omitted: 0 };
-  const mixCache = new Map<string, Selection[]>();
-  const deadline = performance.now() + TIME_LIMIT;
+  const scene = emptyScene();
+  const { world, groups, cells, instances } = scene;
+  const stack = [0];
+  const paths = [""];
+  const children = new Map<string, number>();
+  const values = new Map<string, number>();
+  const states = new Map<string, string>();
+  const generators = new Map<string, () => number>();
+  const models = new Map<string, Model>();
+  const modelLines = new Map<string, number | undefined>();
+  const instanceCounts = new Map<string, number>();
+  const ids = new Set<string>();
+  const selections: Selection[] = [];
+  const overwritten = new Map<number, number>();
+  const warnings = new Map<string, { line: number | undefined; victim: string; count: number }>();
+  let bounds: ReturnType<typeof groupBounds> | undefined;
   let writes = 0;
-  let fatal: BuildFailure | undefined;
+  let parts = 0;
+  let nodes = 0;
+  let fatal: { error: string; line?: number } | undefined;
+  const deadline = performance.now() + TIME_LIMIT;
 
   const timeout = () => {
     if (performance.now() < deadline) return false;
-    fatal ??= failure("The build exceeded 10 seconds.", "Split the work into smaller builds or simplify the script.");
+    fatal ??= { error: `The build exceeded ${TIME_LIMIT / 1000} seconds.` };
     return true;
   };
   runtime.setInterruptHandler(timeout);
-
-  const vm = runtime.newContext();
-  const selectionFor = (handle: QuickJSHandle | undefined): Selection[] => {
-    const input = blockString(handle);
-    let selection = mixCache.get(input);
-    if (!selection) {
-      selection = compileMix(input);
-      if (mixCache.size < 2_048) mixCache.set(input, selection);
-    }
-    return selection;
+  const tick = () => {
+    if (timeout()) throw new BlockValidationError(fatal!.error, "");
   };
-  function blockString(handle: QuickJSHandle | undefined): string {
+
+  const limit = (message: string, hint: string): never => {
+    fatal ??= { error: sentence(message, hint) };
+    throw new BlockValidationError(message, hint);
+  };
+
+  const currentGroup = () => stack[stack.length - 1];
+  const currentPath = () => paths[paths.length - 1];
+
+  function string(handle: QuickJSHandle | undefined, label: string, max = MAX_STRING): string {
     if (!handle || vm.typeof(handle) !== "string") {
-      throw new BlockValidationError("Expected a block ID, mix, or block function.", "Return a block ID string from a block function.");
+      throw new BlockValidationError(`${label} must be a string.`, "");
     }
     const length = vm.getProp(handle, "length").consume((value) => vm.getNumber(value));
-    if (length > MAX_BLOCK_LENGTH) {
-      throw new BlockValidationError("The block argument is too long.", "Use a shorter mix.");
-    }
+    if (length > max) throw new BlockValidationError(`${label} is too long.`, `Use at most ${max} characters.`);
     const input = vm.getString(handle);
-    if (input.length !== length) {
-      throw new BlockValidationError("Invalid characters in a block argument.", "Use a block ID such as oak_stairs.");
-    }
+    if (input.length !== length) throw new BlockValidationError(`${label} contains invalid characters.`, "");
     return input;
+  }
+  function data(handle: QuickJSHandle | undefined, label: string): unknown {
+    return JSON.parse(string(handle, label, MAX_DATA));
   }
   function coordinate(handle: QuickJSHandle | undefined): number {
     const value = handle && vm.typeof(handle) === "number" ? vm.getNumber(handle) : NaN;
     if (!Number.isInteger(value) || Math.abs(value) > MAX_COORDINATE) {
-      throw new BlockValidationError("Invalid block coordinate.", "Use integer coordinates between -30,000,000 and 30,000,000.");
+      throw new BlockValidationError("Block coordinates must be integers.",
+        "Round computed positions with Math.round or Math.floor and stay within ±30,000,000.");
+    }
+    return value;
+  }
+  function point(handle: QuickJSHandle | undefined): Position {
+    if (!handle || vm.typeof(handle) !== "object" || vm.getLength(handle) !== 3) {
+      throw new BlockValidationError("A point must be [x, y, z].", "Write fill([x1, y1, z1], [x2, y2, z2], block).");
+    }
+    return [0, 1, 2].map((axis) => vm.getProp(handle, axis).consume(coordinate)) as Position;
+  }
+  /** The normalized state, or "air". Unknown IDs fail the build. */
+  function blockState(handle: QuickJSHandle | undefined): string {
+    // Called once per set(), so skip string()'s extra round trip for its NUL check.
+    if (!handle || vm.typeof(handle) !== "string") throw new BlockValidationError("A block must be a string.", "");
+    const input = vm.getString(handle);
+    let state = states.get(input);
+    if (state === undefined) {
+      if (input.length > MAX_STRING) throw new BlockValidationError("A block is too long.", "");
+      const normalized = normalizeBlock(input);
+      state = isAir(normalized) ? "air" : normalized;
+      if (states.size < 10_000) states.set(input, state);
+    }
+    return state;
+  }
+  /** The world value for a state placed in the current group; zero for air. */
+  function cellValue(state: string): number {
+    if (state === "air") return 0;
+    const group = currentGroup();
+    const key = `${group} ${state}`;
+    let value = values.get(key);
+    if (value === undefined) {
+      value = cells.push({ state, group });
+      values.set(key, value);
     }
     return value;
   }
   function reserve(count: number) {
     writes += count;
-    if (writes > MAX_WRITES) {
-      fatal ??= failure("The build exceeded 2,000,000 block writes.", "Split the writes into smaller builds.");
-      throw new BlockValidationError(fatal.error, fatal.hint);
-    }
+    if (writes > MAX_WRITES) limit("The build exceeded 2,000,000 block writes.", "Fill fewer or smaller regions.");
   }
-  function put(x: number, y: number, z: number, input: string | UnknownBlockError): void {
-    if (input instanceof UnknownBlockError) {
-      const known = unknown.blocks.get(input.block);
-      if (known) known.count++;
-      else if (unknown.blocks.size < WARNING_LIMIT) unknown.blocks.set(input.block, { error: input, count: 1 });
-      else unknown.omitted++;
-      return;
+
+  // Replacing another group's block is reported. Carving it out with air is ordinary layering.
+  const replaced = (placing: number) => (previous: number, count: number) => {
+    const { group } = cells[previous - 1];
+    if (placing && group !== currentGroup()) overwritten.set(group, (overwritten.get(group) ?? 0) + count);
+  };
+  // An error built by the host has no guest frames, so ask the guest for its stack.
+  const traceFunction = vm.unwrapResult(vm.evalCode("(() => { const E = Error; return () => new E().stack; })()", "api.js", { type: "global" }));
+  function callerLine(): number | undefined {
+    const result = vm.callFunction(traceFunction, vm.undefined);
+    if (result.error) {
+      result.error.dispose();
+      return undefined;
     }
-    const key = blockKey(x, y, z);
-    if (input === "air") blocks.delete(key);
-    else blocks.set(key, input);
+    return result.value.consume((stack) => lineNumber(vm.getString(stack)));
   }
-  function withBlock(fn: QuickJSHandle, [x, y, z]: Position) {
-    const args = [vm.newNumber(x), vm.newNumber(y), vm.newNumber(z)];
-    try {
-      const value = vm.callFunction(fn, vm.undefined, args);
-      if (value.error) return { error: value.error };
-      value.value.consume((item) => put(x, y, z, chooseBlock(selectionFor(item), random)));
-    } finally {
-      for (const arg of args) arg.dispose();
+  function recordOverwrites() {
+    if (!overwritten.size) return;
+    const line = callerLine();
+    for (const [group, count] of overwritten) {
+      const victim = groupPath(scene, group) || ROOT_LABEL;
+      const key = `${line} ${victim}`;
+      const warning = warnings.get(key);
+      if (warning) warning.count += count;
+      else warnings.set(key, { line, victim, count });
     }
+    overwritten.clear();
   }
-  function register(name: string, callback: (...args: QuickJSHandle[]) =>
-    QuickJSHandle | { error: QuickJSHandle } | void): void {
+
+  function register(name: string, callback: (...args: QuickJSHandle[]) => QuickJSHandle | void): void {
     vm.newFunction(name, (...args) => {
       try {
-        if (timeout() || fatal) throw new BlockValidationError(fatal!.error, fatal!.hint);
+        if (fatal || timeout()) throw new BlockValidationError(fatal!.error, "");
         return callback(...args);
       } catch (error) {
-        if (!(error instanceof BlockValidationError)) throw error;
-        const exception = vm.newError(error.message);
-        vm.newString(error.hint).consume((hint) => vm.setProp(exception, "hint", hint));
-        if (fatal && fatal.line === undefined) {
-          const line = vm.getProp(exception, "stack").consume((stack) => lineNumber(vm.getString(stack)));
-          fatal = failure(fatal.error, fatal.hint, line);
-        }
+        let described: { message: string; hint: string };
+        if (error instanceof WorldTooSparseError) {
+          fatal ??= {
+            error: "The build has more than 8,192 partly filled 16×16×16 sections. Keep scattered blocks closer together.",
+          };
+          described = { message: fatal.error, hint: "" };
+        } else if (error instanceof BlockValidationError || error instanceof SelectorError) {
+          described = describeError(error);
+        } else throw error;
+        if (fatal && fatal.line === undefined) fatal.line = callerLine();
+        const exception = vm.newError(described.message);
+        vm.newString(described.hint).consume((hint) => vm.setProp(exception, "hint", hint));
         return { error: exception };
       }
     }).consume((fn) => vm.setProp(vm.global, name, fn));
   }
 
+  const removed = (selection: Selection) => {
+    const doomed = new Set(selection.groups);
+    // Parents always come before their children.
+    groups.forEach((group, id) => {
+      if (group && doomed.has(group.parent)) doomed.add(id);
+    });
+    if (doomed.size) {
+      world.erase((value) => doomed.has(cells[value - 1].group), tick);
+    }
+    const gone = new Set(selection.instances);
+    instances.forEach((instance, index) => {
+      if (instance && (gone.has(index) || doomed.has(instance.group))) {
+        ids.delete(instance.id);
+        instances[index] = null;
+      }
+    });
+    // Groups that are still running stay in the tree, emptied.
+    for (const id of doomed) {
+      const group = groups[id];
+      if (!group || stack.includes(id)) continue;
+      children.delete(`${group.parent} ${group.name}`);
+      groups[id] = null;
+    }
+    bounds = undefined;
+  };
+
   try {
     register("set", (x, y, z, block) => {
-      const position: Position = [coordinate(x), coordinate(y), coordinate(z)];
+      const [px, py, pz] = [coordinate(x), coordinate(y), coordinate(z)];
       reserve(1);
-      if (block && vm.typeof(block) === "function") return withBlock(block, position);
-      put(...position, chooseBlock(selectionFor(block), random));
+      const value = cellValue(blockState(block));
+      const previous = world.set(px, py, pz, value);
+      if (previous) replaced(value)(previous, 1);
+      bounds = undefined;
+      recordOverwrites();
     });
-    register("fill", (box, block) => {
-      if (!box || vm.typeof(box) !== "object" || vm.getLength(box) !== 6) {
-        throw new BlockValidationError("Invalid fill box.", "Use [x1, y1, z1, x2, y2, z2], with inclusive corners.");
+    register("fill", (from, to, block) => {
+      const box = normalizeBox([...point(from), ...point(to)] as Box);
+      const state = blockState(block);
+      reserve((box[3] - box[0] + 1) * (box[4] - box[1] + 1) * (box[5] - box[2] + 1));
+      const value = cellValue(state);
+      world.fill(box, value, replaced(value), tick);
+      bounds = undefined;
+      recordOverwrites();
+    });
+    register("get", (x, y, z) => {
+      const value = world.get(coordinate(x), coordinate(y), coordinate(z));
+      return vm.newString(value ? cells[value - 1].state : "air");
+    });
+    register("turn", (block, quarterTurns) => {
+      const turns = quarterTurns && vm.typeof(quarterTurns) === "number" ? vm.getNumber(quarterTurns) : NaN;
+      return vm.newString(turnBlock(string(block, "A block"), turns));
+    });
+    register("rand", () => {
+      const path = currentPath();
+      let generator = generators.get(path);
+      if (!generator) generators.set(path, generator = groupRandom(path));
+      return vm.newNumber(generator());
+    });
+    register("__log", (line) => {
+      if (logs.length < MAX_LOGS) logs.push(vm.getString(line));
+      else if (logs.length === MAX_LOGS) logs.push("[more log lines omitted]");
+    });
+    register("__enter", (handle) => {
+      const name = string(handle, "A group name", 80);
+      if (!name.trim() || name !== name.trim() || /[/"'\u0000-\u001f\u007f]/u.test(name)) {
+        throw new BlockValidationError(`Invalid group name ${JSON.stringify(name)}.`,
+          "Use a name without slashes, quotes or surrounding spaces, and nest group() calls for a path.");
       }
-      const values = Array.from({ length: 6 }, (_, index) => vm.getProp(box, index).consume(coordinate));
-      const [x1, y1, z1, x2, y2, z2] = normalizeBox(values as Box);
-      reserve((x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1));
-      const callback = block && vm.typeof(block) === "function" ? block : undefined;
-      const selection = callback ? undefined : selectionFor(block);
-      const constant = selection?.length === 1 ? selection[0].block : undefined;
-      let iterations = 0;
-      for (let y = y1; y <= y2; y++) {
-        for (let z = z1; z <= z2; z++) {
-          for (let x = x1; x <= x2; x++) {
-            if ((iterations++ & 1023) === 0 && timeout()) {
-              throw new BlockValidationError(fatal!.error, fatal!.hint);
-            }
-            if (callback) {
-              const error = withBlock(callback, [x, y, z]);
-              if (error) return error;
-            } else {
-              put(x, y, z, constant ?? chooseBlock(selection!, random));
-            }
-          }
+      const parent = currentGroup();
+      const key = `${parent} ${name}`;
+      let id = children.get(key);
+      if (id === undefined) {
+        if (groups.length > MAX_GROUPS) limit("The build has too many groups.", `Use at most ${MAX_GROUPS}.`);
+        id = groups.push({ name, parent }) - 1;
+        children.set(key, id);
+      }
+      paths.push(currentPath() ? `${currentPath()}/${name}` : name);
+      stack.push(id);
+    });
+    register("__exit", () => {
+      if (stack.length > 1) {
+        stack.pop();
+        paths.pop();
+      }
+    });
+    register("__model", (nameHandle, partsHandle, optionsHandle) => {
+      const name = string(nameHandle, "A model name", 80);
+      if (!/^[^\s>.@#"',[\]/]+$/.test(name)) {
+        throw new BlockValidationError(`Invalid model name ${JSON.stringify(name)}.`,
+          "Use letters, digits, hyphens and underscores.");
+      }
+      if (models.has(name)) throw new BlockValidationError(`Model "${name}" is already defined.`, "Give each model its own name.");
+      if (models.size >= MAX_MODELS) limit("The build defines too many models.", `Use at most ${MAX_MODELS}.`);
+      const options = object(data(optionsHandle, "model options") ?? {}, "model option", ["tags"]);
+      models.set(name, { parts: parseParts(data(partsHandle, "Model parts")), tags: parseTags(options.tags) });
+      modelLines.set(name, callerLine());
+    });
+    register("__use", (nameHandle, optionsHandle) => {
+      const name = string(nameHandle, "A model name", 80);
+      const model = models.get(name);
+      if (!model) throw unknownModel(name, models);
+      const options = object(data(optionsHandle, "use options"), "use option", ["at", "rotate", "scale", "id", "tags"]);
+      const root = compose(identity() as never, parseTransform(options, "use"));
+      if (instances.length >= MAX_INSTANCES) limit("The build places too many instances.", `Use at most ${MAX_INSTANCES}.`);
+      let id = options.id;
+      if (id === undefined) {
+        const prefix = currentPath() ? `${currentPath()}/${name}` : name;
+        let count = instanceCounts.get(prefix) ?? 0;
+        do id = `${prefix}-${++count}`;
+        while (ids.has(id as string));
+        instanceCounts.set(prefix, count);
+      } else if (typeof id !== "string" || !id || id.length > 200 || /["'\u0000-\u001f]/.test(id)) {
+        throw new BlockValidationError("An instance id must be a non-empty string without quotes.", "");
+      } else if (ids.has(id)) {
+        throw new BlockValidationError(`Duplicate instance id "${id}".`, "Give each instance its own id.");
+      }
+      const flattened = flatten(models, name, root, (isBlock) => {
+        if (++nodes > MAX_MODEL_NODES) limit("Models expand into too many parts.", "Simplify nested models.");
+        if (isBlock && ++parts > MAX_DISPLAY_PARTS) {
+          limit("The build has too many block displays.", `Use at most ${MAX_DISPLAY_PARTS} block parts in total.`);
         }
-      }
-    });
-    register("get", (x, y, z) => vm.newString(blocks.get(blockKey(coordinate(x), coordinate(y), coordinate(z))) ?? "air"));
-    register("fam", (block) => {
-      const family = blockFamily(blockString(block));
-      const result = vm.newObject();
-      for (const [name, id] of Object.entries(family)) {
-        vm.newString(id).consume((value) => vm.setProp(result, name, value));
-      }
-      return result;
-    });
-    register("rand", () => vm.newNumber(random()));
-    register("__appendLog", (value) => {
-      if (logs.length < MAX_LOGS) logs.push(vm.getString(value).slice(0, 1_024));
-      else if (logs.length === MAX_LOGS) logs.push("[Additional log lines omitted.]");
-    });
-    register("__applyTurn", (block, rotate, mirror) => {
-      const options: TurnOptions = {};
-      if (rotate && vm.typeof(rotate) !== "undefined") {
-        options.rotate = vm.typeof(rotate) === "number" ? vm.getNumber(rotate) : NaN;
-      }
-      if (mirror && vm.typeof(mirror) !== "undefined") {
-        const axis = vm.typeof(mirror) === "string" ? vm.getString(mirror) : "";
-        if (axis !== "x" && axis !== "z") {
-          throw new BlockValidationError("Invalid mirror axis.", 'Set mirror to "x" or "z".');
-        }
-        options.mirror = axis;
-      }
-      if (options.rotate !== undefined && (!Number.isSafeInteger(options.rotate) || options.rotate % 90 !== 0)) {
-        throw new BlockValidationError("Invalid rotation.", "Set rotate to a multiple of 90 degrees clockwise.");
-      }
-      const transformed = splitMix(blockString(block)).map(({ block, weightText }) => {
-        let id: string;
-        try {
-          id = turnBlock(block, options);
-        } catch (error) {
-          if (!(error instanceof UnknownBlockError)) throw error;
-          id = block;
-        }
-        return weightText === undefined ? id : `${id}*${weightText}`;
+        if ((nodes & 255) === 0) tick();
       });
-      return vm.newString(transformed.join(","));
+      ids.add(id as string);
+      instances.push({
+        id: id as string, model: name, group: currentGroup(), parts: flattened,
+        tags: [...new Set([...model.tags, ...parseTags(options.tags)])],
+      });
+      bounds = undefined;
+      return vm.newString(id as string);
+    });
+    register("__select", (handle) => {
+      const found = select(scene, string(handle, "A selector"));
+      if (selections.length >= MAX_SELECTIONS) limit("The build calls select too many times.", "Reuse a selection.");
+      // An empty selection keeps its selector so that remove() can explain it.
+      const empty = !found.groups.length && !found.instances.length;
+      const selector = empty ? vm.getString(handle) : undefined;
+      const index = selections.push(Object.assign(found, { selector })) - 1;
+      const matches = [
+        ...found.groups.map((id) => ({ kind: "group", path: groupPath(scene, id) })),
+        ...found.instances.map((id) => {
+          const { id: instanceId, model, tags, group } = instances[id]!;
+          return { kind: "instance", id: instanceId, model, tags, path: groupPath(scene, group) };
+        }),
+      ];
+      return vm.newString(JSON.stringify({ handle: index, matches }));
+    });
+    register("__bounds", (handle, position) => {
+      const selection = selections[vm.getNumber(handle)];
+      const index = vm.getNumber(position);
+      let box: Box | null = null;
+      if (index < selection.groups.length) {
+        bounds ??= groupBounds(scene);
+        box = bounds[selection.groups[index]] ?? null;
+      } else {
+        const instance = instances[selection.instances[index - selection.groups.length]];
+        box = instance ? instanceBounds(instance) : null;
+      }
+      return vm.newString(JSON.stringify(box && [box.slice(0, 3), box.slice(3)]));
+    });
+    register("__remove", (handle) => {
+      const selection = selections[vm.getNumber(handle)] as Selection & { selector?: string };
+      if (selection.selector !== undefined) throw explainEmpty(scene, selection.selector);
+      removed(selection);
     });
 
     const describe = vm.unwrapResult(vm.evalCode(bootstrap, "api.js", { type: "global" }));
+    const guestFailure = (exception: QuickJSHandle): BuildFailure => {
+      const [message, trace, hint] = describeThrown(vm, describe, exception);
+      return { ok: false, error: sentence(message, hint), line: lineNumber(trace), logs };
+    };
     try {
-      const execution = vm.evalCode(code, SCRIPT_FILENAME, { type: "global" });
+      const execution = vm.evalCode(source, SCRIPT_FILENAME, { type: "global" });
       timeout();
       if (execution.error) {
-        const result = execution.error.consume((exception) => guestFailure(vm, describe, exception));
-        return fatal?.line ? fatal : fatal ? failure(fatal.error, fatal.hint, result.line) : result;
+        const result = execution.error.consume(guestFailure);
+        return fatal ? { ok: false, error: fatal.error, line: fatal.line ?? result.line, logs } : result;
       }
-      const result = execution.value.consume((value) => {
-        if (fatal) return fatal;
+      const asynchronous = execution.value.consume((value): BuildFailure | undefined => {
+        if (fatal) return { ok: false, ...fatal, logs };
         if (!runtime.hasPendingJob() && vm.typeof(value) !== "object") return;
         const state = vm.getPromiseState(value);
-        if (state.type === "rejected") {
-          return state.error.consume((exception) => guestFailure(vm, describe, exception));
-        }
+        if (state.type === "rejected") return state.error.consume(guestFailure);
         if (state.type === "fulfilled" && !state.notAPromise) state.value.dispose();
         if (runtime.hasPendingJob() || state.type === "pending") {
-          return failure("The script queued asynchronous work.", "Use synchronous JavaScript with the build functions. Imports are unavailable.");
+          return { ok: false, error: "The script queued asynchronous work. Build scripts must be synchronous and cannot import.", logs };
         }
       });
-      if (result) return result;
+      if (asynchronous) return asynchronous;
     } finally {
       describe.dispose();
     }
+
+    const checked = new Set<string>();
+    for (const name of models.keys()) {
+      try {
+        validateModel(models, name, checked);
+      } catch (error) {
+        if (!(error instanceof BlockValidationError)) throw error;
+        const { message, hint } = describeError(error);
+        return { ok: false, error: sentence(message, hint), line: modelLines.get(name), logs };
+      }
+    }
   } finally {
+    traceFunction.dispose();
     vm.dispose();
     runtime.dispose();
   }
 
-  const bounds = getBounds(blocks);
-  const warnings = buildWarnings(blocks, bounds, unknown);
-  const changes: BlockChange[] = [];
-  let placed = 0;
-  let removed = 0;
-  for (const [key, after] of blocks) {
-    const before = initial.get(key) ?? "air";
-    if (before === after) continue;
-    const [x, y, z] = coordinates(key);
-    changes.push({ x, y, z, before, after });
-    placed++;
+  const messages = [...warnings.values()].slice(0, WARNING_LIMIT).map(({ line, victim, count }) =>
+    `${line ? `${SCRIPT_FILENAME}:${line} ` : ""}overwrote ${count.toLocaleString("en-US")} block${count === 1 ? "" : "s"} owned by ${victim}`);
+  if (warnings.size > WARNING_LIMIT) messages.push(`${warnings.size - WARNING_LIMIT} more overwrite warnings omitted`);
+  return { ok: true, scene, logs, warnings: messages };
+}
+
+function describeThrown(vm: QuickJSContext, describe: QuickJSHandle, exception: QuickJSHandle): [string, string, string] {
+  const detail = vm.callFunction(describe, vm.undefined, exception);
+  if (detail.error) {
+    detail.error.dispose();
+    return ["The script threw an exception.", "", ""];
   }
-  for (const [key, before] of initial) {
-    if (blocks.has(key)) continue;
-    const [x, y, z] = coordinates(key);
-    changes.push({ x, y, z, before, after: "air" });
-    removed++;
-  }
-  return {
-    ok: true,
-    summary: `Placed ${placed} and removed ${removed} blocks${warnings.length ? ` with ${warnings.length} warning${warnings.length === 1 ? "" : "s"}` : ""}.`,
-    blocks, changes, placed, removed, bounds, logs, warnings, seed,
-  };
+  return detail.value.consume((value) =>
+    [0, 1, 2].map((index) => vm.getProp(value, index).consume((part) => vm.getString(part))) as [string, string, string]);
 }

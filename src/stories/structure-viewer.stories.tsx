@@ -22,10 +22,18 @@ export const CastleKeep: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(await canvas.findByText('castle-keep')).toBeInTheDocument()
-    await expect(await canvas.findByText('120')).toBeInTheDocument()
-    await expect(await canvas.findByText('8 × 5 × 8')).toBeInTheDocument()
+    await expect(await canvas.findByText('176 blocks')).toBeInTheDocument()
+    await expect(await canvas.findByText('8 × 6 × 8')).toBeInTheDocument()
+    await expect(await canvas.findByRole('button', { name: 'Hide Castle' })).toBeInTheDocument()
     // The SSE handler marks the connection as live shortly after mount.
     await expect(await canvas.findByText('Live')).toBeInTheDocument()
+  },
+}
+
+export const FailingEdit: Story = {
+  args: { name: 'windmill' },
+  play: async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByText(/Showing the last good build/)).toBeInTheDocument()
   },
 }
 
