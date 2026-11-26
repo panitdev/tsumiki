@@ -29,9 +29,46 @@ body {
 }
 
 .agent-connection { display: grid; gap: 16px; font-size: 14px; }
+.agent-connection-view { display: grid; gap: 16px; font-size: 14px; }
+.agent-connection-view p { color: var(--muted-foreground); line-height: 1.55; }
+.agent-connection-view code { font-size: 12px; overflow-wrap: anywhere; }
+.agent-connection-fineprint { font-size: 12px; color: var(--muted-foreground); line-height: 1.5; }
+.code-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+}
+.code-row code {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.code-row button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+  background: transparent;
+  cursor: pointer;
+  transition: color .15s, background .15s;
+}
+.code-row button:hover { color: var(--foreground); background: var(--accent); }
+.code-row button[aria-label]:active { transform: scale(.94); }
 .agent-connection dt { margin-bottom: 4px; font-weight: 600; }
 .agent-connection dd { color: var(--muted-foreground); line-height: 1.55; overflow-wrap: anywhere; }
-.agent-connection code { color: var(--foreground); }
 
 .brandmark {
   display: inline-flex;

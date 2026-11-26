@@ -26,6 +26,16 @@ export const OpensDialog: Story = {
     await userEvent.click(trigger)
     const dialog = await within(document.body).findByRole('dialog')
     expect(within(dialog).getByText('Connect an agent')).toBeInTheDocument()
-    expect(within(dialog).getByText(/\/api\/mcp/)).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: /Claude/ })).toBeInTheDocument()
+  },
+}
+
+export const ShowsClientDetail: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: 'Connect an agent' }))
+    const dialog = await within(document.body).findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /Claude Code/ }))
+    expect(await within(dialog).findByText(/\/api\/mcp/)).toBeInTheDocument()
   },
 }
