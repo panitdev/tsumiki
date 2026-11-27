@@ -4,6 +4,7 @@ import { Button } from "@charlotte-ui/button";
 import { Card } from "@charlotte-ui/card";
 import { ChevronLeft, Download, Layers3, ListTree, MousePointer2 } from "lucide-react";
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { useCallback, useDeferredValue, useMemo, useState } from "react";
 import { sceneBounds, groupPath, ROOT_LABEL, type SceneData } from "../engine/scene";
 import { formatDimensions, numberFormat, structurePath } from "./data";
@@ -21,6 +22,7 @@ function pathOf(data: SceneData, group: number) {
 }
 
 function Readout({ picked, data }: { picked: Inspected | null; data: SceneData }) {
+  const t = useTranslations("viewer");
   if (picked?.kind === "display") {
     const instance = data.instances[picked.instance];
     if (instance) {
@@ -33,7 +35,7 @@ function Readout({ picked, data }: { picked: Inspected | null; data: SceneData }
       );
     }
   }
-  if (picked?.kind !== "block") return <p className="control-help">Hover or tap to see a block’s ID, position and group.</p>;
+  if (picked?.kind !== "block") return <p className="control-help">{t("pickHint")}</p>;
   const bracket = picked.state.indexOf("[");
   return (
     <div className="inspector-readout">
@@ -53,6 +55,7 @@ function Readout({ picked, data }: { picked: Inspected | null; data: SceneData }
 }
 
 export function StructureViewer({ name }: { name: string }) {
+  const t = useTranslations("viewer");
   const endpoint = `/api/structures${structurePath(name)}`;
   const current = useStructure(endpoint);
   const [requestedCut, setRequestedCut] = useState<number | null>(null);
@@ -90,17 +93,17 @@ export function StructureViewer({ name }: { name: string }) {
   return (
     <main className="viewer-page">
       <Button asChild variant="link" className="back-link">
-        <Link href="/"><ChevronLeft size={16} /> Structures</Link>
+        <Link href="/"><ChevronLeft size={16} /> {t("back")}</Link>
       </Button>
       <div className="viewer-heading">
         <h1>{name}</h1>
         {snapshot && (
           <div className="viewer-meta">
-            <span>{numberFormat.format(snapshot.blockCount)} {snapshot.blockCount === 1 ? "block" : "blocks"}</span>
-            {snapshot.displayCount > 0 && <span>{numberFormat.format(snapshot.displayCount)} block {snapshot.displayCount === 1 ? "display" : "displays"}</span>}
-            {frame && <span title="Dimensions in X, Y, Z order">{formatDimensions(frame)}</span>}
+            <span>{numberFormat.format(snapshot.blockCount)} {t("blockCount", { count: snapshot.blockCount })}</span>
+            {snapshot.displayCount > 0 && <span>{numberFormat.format(snapshot.displayCount)} {t("displayCount", { count: snapshot.displayCount })}</span>}
+            {frame && <span title={t("dimensionsTitle")}>{formatDimensions(frame)}</span>}
             <span className="connection" data-live={current.connection === "Live" && !current.error} role="status">
-              <span aria-hidden />{current.error ? "Update failed" : current.connection}
+              <span aria-hidden />{current.error ? t("updateFailed") : t(current.connection.charAt(0).toLowerCase() + current.connection.slice(1))}
             </span>
           </div>
         )}
@@ -108,33 +111,33 @@ export function StructureViewer({ name }: { name: string }) {
       {current.error && snapshot && (
         <div className="update-error" role="alert">
           <p>{current.error}</p>
-          <Button variant="outline" size="xs" onClick={current.retry}>Retry</Button>
+          <Button variant="outline" size="xs" onClick={current.retry}>{t("retry")}</Button>
         </div>
       )}
       {snapshot?.buildError && (
         <div className="update-error" role="status">
-          <p>Showing the last good build. {snapshot.buildError}</p>
+          <p>{t("lastGoodBuild", { error: snapshot.buildError })}</p>
         </div>
       )}
       <div className="viewer-layout">
         <div className="stage">
           <StructureCanvas snapshot={snapshot} scene={scene} requestError={current.error} onPick={reportPick} onRetry={current.retry} />
           <p className="camera-instructions" id="camera-instructions">
-            <span className="drag-instructions">Drag to orbit <span>·</span> Shift + drag to pan <span>·</span> Scroll to zoom</span>
-            <span className="touch-instructions">Drag to orbit <span>·</span> Two fingers to pan or zoom</span>
-            <span className="sr-only">With the canvas focused, use arrow keys to orbit, Shift and arrow keys to pan, plus and minus to zoom, and Home to frame the structure.</span>
+            <span className="drag-instructions">{t("dragInstructions")}</span>
+            <span className="touch-instructions">{t("touchInstructions")}</span>
+            <span className="sr-only">{t("keyboardInstructions")}</span>
           </p>
         </div>
-        <Card className="viewer-controls" role="complementary" aria-label="Structure controls">
+        <Card className="viewer-controls" role="complementary" aria-label={t("controls")}>
           <section className="control-section" aria-labelledby="layer-label">
             <div className="control-heading">
               <Layers3 size={17} aria-hidden />
-              <h2 id="layer-label">Y slice</h2>
-              <Button type="button" size="xs" variant="ghost" disabled={cutY === undefined} onClick={() => setRequestedCut(null)}>Show all</Button>
+              <h2 id="layer-label">{t("ySlice")}</h2>
+              <Button type="button" size="xs" variant="ghost" disabled={cutY === undefined} onClick={() => setRequestedCut(null)}>{t("showAll")}</Button>
             </div>
             <input
               aria-labelledby="layer-label"
-              aria-valuetext={cutY === undefined ? "All layers" : `Up to Y ${cutY}`}
+              aria-valuetext={cutY === undefined ? t("allLayers") : t("upToY", { y: cutY })}
               type="range"
               min={frame?.[1] ?? 0}
               max={frame?.[4] ?? 0}
@@ -146,16 +149,16 @@ export function StructureViewer({ name }: { name: string }) {
               }}
             />
             <div className="range-labels">
-              <span>{frame ? `Y ${frame[1]}` : "—"}</span>
-              <output>{cutY === undefined ? "All layers" : `Up to Y ${cutY}`}</output>
+              <span>{frame ? t("yLabel", { y: frame[1] }) : "—"}</span>
+              <output>{cutY === undefined ? t("allLayers") : t("upToY", { y: cutY })}</output>
             </div>
           </section>
 
           <section className="control-section" aria-labelledby="groups-label">
             <div className="control-heading">
               <ListTree size={17} aria-hidden />
-              <h2 id="groups-label">Groups</h2>
-              <Button type="button" size="xs" variant="ghost" disabled={!filtered} onClick={() => { setHidden(new Set()); setIsolated(null); }}>Show all</Button>
+              <h2 id="groups-label">{t("groups")}</h2>
+              <Button type="button" size="xs" variant="ghost" disabled={!filtered} onClick={() => { setHidden(new Set()); setIsolated(null); }}>{t("showAll")}</Button>
             </div>
             <GroupTree nodes={tree} state={{
               hidden, isolated: activeIsolation, selected,
@@ -166,7 +169,7 @@ export function StructureViewer({ name }: { name: string }) {
           <section className="control-section inspector" aria-labelledby="inspector-label">
             <div className="control-heading">
               <MousePointer2 size={16} aria-hidden />
-              <h2 id="inspector-label">Block inspector</h2>
+              <h2 id="inspector-label">{t("blockInspector")}</h2>
             </div>
             <Readout picked={inspected} data={data} />
           </section>
@@ -174,7 +177,7 @@ export function StructureViewer({ name }: { name: string }) {
           <section className="control-section download" aria-labelledby="download-label">
             <div className="control-heading">
               <Download size={16} aria-hidden />
-              <h2 id="download-label">Export</h2>
+              <h2 id="download-label">{t("export")}</h2>
             </div>
             <DownloadPanel endpoint={endpoint} name={name} disabled={!frame} />
           </section>

@@ -23,7 +23,7 @@ export default async function SignInErrorPage({
           <div className="grid gap-2">
             <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
             <p className="leading-relaxed text-muted-foreground">{message}</p>
-            {code && <p className="text-sm text-muted-foreground">Surge error code <code>{code}</code></p>}
+            {code && <p className="text-sm text-muted-foreground">{t("auth.error.surgeCode", { code })}</p>}
           </div>
           <Button asChild>
             {reason === "disabled"

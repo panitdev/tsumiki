@@ -2,12 +2,14 @@
 
 import { Button } from "@charlotte-ui/button";
 import { Download } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 
 const formats = ["schem", "litematic", "nbt", "mcfunction"];
 
 export function DownloadPanel({ endpoint, name, disabled }: { endpoint: string; name: string; disabled: boolean }) {
   const [format, setFormat] = useState(formats[0]);
+  const t = useTranslations("download");
   const [version, setVersion] = useState("26.3");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +27,7 @@ export function DownloadPanel({ endpoint, name, disabled }: { endpoint: string; 
       link.click();
       URL.revokeObjectURL(url);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Couldn’t download the structure.");
+      setError(reason instanceof Error ? reason.message : t("failed"));
     } finally {
       setBusy(false);
     }
@@ -34,17 +36,17 @@ export function DownloadPanel({ endpoint, name, disabled }: { endpoint: string; 
   return (
     <>
       <div className="download-fields">
-        <label>Format
+        <label>{t("format")}
           <select value={format} onChange={(event) => setFormat(event.currentTarget.value)}>
             {formats.map((value) => <option key={value}>{value}</option>)}
           </select>
         </label>
-        <label>Java version
+        <label>{t("javaVersion")}
           <input value={version} onChange={(event) => setVersion(event.currentTarget.value.trim())} />
         </label>
       </div>
       <Button type="button" size="sm" variant="outline" disabled={disabled || busy} onClick={download}>
-        {busy ? "Preparing…" : "Download"} <Download size={14} aria-hidden />
+        {busy ? t("preparing") : t("download")} <Download size={14} aria-hidden />
       </Button>
       {error && <p className="control-error" role="alert">{error}</p>}
     </>

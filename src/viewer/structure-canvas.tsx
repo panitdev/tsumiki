@@ -2,6 +2,7 @@
 
 import { Button } from "@charlotte-ui/button";
 import { Box, LoaderCircle, Maximize, Minus, Plus } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 import { makeResources, type RenderAssetData } from "../render/shared";
 import { getJson, type StructureSnapshot } from "./data";
@@ -15,7 +16,7 @@ function loadAssets() {
     atlas.src = "/api/assets/atlas";
     assetsRequest = Promise.all([
       getJson<RenderAssetData>("/api/assets"),
-      atlas.decode().catch(() => { throw new Error("Couldn’t load the Minecraft texture atlas."); }),
+      atlas.decode().catch(() => { throw new Error(ATLAS_ERROR); }),
     ]).then(([assets]) => makeResources(assets, atlas)).catch((error: unknown) => {
       assetsRequest = null;
       throw error;
@@ -25,8 +26,13 @@ function loadAssets() {
 }
 
 function renderError(error: unknown) {
-  return error instanceof Error ? error.message : "Couldn’t render the structure.";
+  return error instanceof Error ? error.message : RENDER_ERROR;
 }
+
+// Fallback messages thrown inside async loaders; the component translates
+// errors with these well-known strings.
+const ATLAS_ERROR = "Couldn’t load the Minecraft texture atlas.";
+const RENDER_ERROR = "Couldn’t render the structure.";
 
 interface StructureCanvasProps {
   snapshot: StructureSnapshot | null;
@@ -37,6 +43,7 @@ interface StructureCanvasProps {
 }
 
 export function StructureCanvas({ snapshot, scene, requestError, onPick, onRetry }: StructureCanvasProps) {
+  const t = useTranslations("canvas");
   const canvas = useRef<HTMLCanvasElement>(null);
   const viewport = useRef<Viewport | null>(null);
   const [assets, setAssets] = useState<ReturnType<typeof makeResources> | null>(null);
@@ -95,12 +102,12 @@ export function StructureCanvas({ snapshot, scene, requestError, onPick, onRetry
   const enabled = Boolean(snapshot && hasBlocks && assets && !sceneError && !lost);
   return (
     <div className="viewport" aria-busy={busy}>
-      <canvas ref={canvas} aria-label="3D structure" aria-describedby="camera-instructions" tabIndex={enabled ? 0 : -1} />
+      <canvas ref={canvas} aria-label={t("structure")} aria-describedby="camera-instructions" tabIndex={enabled ? 0 : -1} />
       {enabled && (
-        <div className="camera-buttons" aria-label="Camera controls" role="group">
-          <Button type="button" variant="outline" size="icon-sm" title="Zoom in (+)" aria-label="Zoom in" onClick={() => viewport.current?.zoom(0.8)}><Plus /></Button>
-          <Button type="button" variant="outline" size="icon-sm" title="Zoom out (−)" aria-label="Zoom out" onClick={() => viewport.current?.zoom(1.25)}><Minus /></Button>
-          <Button type="button" variant="outline" size="icon-sm" title="Frame structure (Home)" aria-label="Frame structure" onClick={() => viewport.current?.frame()}><Maximize /></Button>
+        <div className="camera-buttons" aria-label={t("cameraControls")} role="group">
+          <Button type="button" variant="outline" size="icon-sm" title={t("zoomInTitle")} aria-label={t("zoomIn")} onClick={() => viewport.current?.zoom(0.8)}><Plus /></Button>
+          <Button type="button" variant="outline" size="icon-sm" title={t("zoomOutTitle")} aria-label={t("zoomOut")} onClick={() => viewport.current?.zoom(1.25)}><Minus /></Button>
+          <Button type="button" variant="outline" size="icon-sm" title={t("frameTitle")} aria-label={t("frame")} onClick={() => viewport.current?.frame()}><Maximize /></Button>
         </div>
       )}
       {(sceneError || busy || lost || !hasBlocks) && (
@@ -108,12 +115,12 @@ export function StructureCanvas({ snapshot, scene, requestError, onPick, onRetry
           {sceneError ? (
             <>
               <p>{sceneError}</p>
-              <Button size="sm" variant="outline" onClick={snapshot ? () => { setError(null); setAttempt(attempt + 1); } : onRetry}>Try again</Button>
+              <Button size="sm" variant="outline" onClick={snapshot ? () => { setError(null); setAttempt(attempt + 1); } : onRetry}>{t("tryAgain")}</Button>
             </>
           ) : busy || lost ? (
-            <><LoaderCircle size={22} className="spin" /><p>{lost ? "Restoring graphics" : snapshot ? "Loading Minecraft assets" : "Loading structure"}</p></>
+            <><LoaderCircle size={22} className="spin" /><p>{lost ? t("restoringGraphics") : snapshot ? t("loadingAssets") : t("loadingStructure")}</p></>
           ) : (
-            <><span className="viewport-empty-icon"><Box size={27} strokeWidth={1.5} /></span><p>This structure is empty.</p></>
+            <><span className="viewport-empty-icon"><Box size={27} strokeWidth={1.5} /></span><p>{t("empty")}</p></>
           )}
         </div>
       )}

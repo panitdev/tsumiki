@@ -4,10 +4,12 @@ import { Button } from "@charlotte-ui/button";
 import { Card } from "@charlotte-ui/card";
 import { ArrowUpRight, Box, LoaderCircle } from "lucide-react";
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { formatDimensions, getJson, numberFormat, structurePath, type StructureSummary } from "./data";
 
 export function StructureList() {
+  const t = useTranslations();
   const [structures, setStructures] = useState<StructureSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [request, setRequest] = useState(0);
@@ -19,7 +21,7 @@ export function StructureList() {
         if (!controller.signal.aborted) setStructures(result.structures);
       },
       (reason: unknown) => {
-        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Couldn’t load structures.");
+        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("list.couldntLoad"));
       },
     );
     return () => controller.abort();
@@ -29,35 +31,35 @@ export function StructureList() {
     return (
       <Card className="list-state" role="alert">
         <p>{error}</p>
-        <Button variant="outline" size="sm" onClick={() => { setError(null); setRequest(request + 1); }}>Try again</Button>
+        <Button variant="outline" size="sm" onClick={() => { setError(null); setRequest(request + 1); }}>{t("list.tryAgain")}</Button>
       </Card>
     );
   }
 
   if (!structures) {
-    return <Card className="list-state" role="status"><LoaderCircle className="spin" size={20} /> Loading structures</Card>;
+    return <Card className="list-state" role="status"><LoaderCircle className="spin" size={20} /> {t("list.loading")}</Card>;
   }
 
   if (structures.length === 0) {
     return (
       <Card className="list-state list-empty">
         <span className="list-icon"><Box size={22} strokeWidth={1.6} /></span>
-        <strong>No structures yet</strong>
-        <p>Connect an agent, then ask it to open a named structure.</p>
+        <strong>{t("list.emptyTitle")}</strong>
+        <p>{t("list.emptyHint")}</p>
       </Card>
     );
   }
 
   return (
     <Card className="structure-directory">
-      <ul className="structure-list" aria-label="Structures">
+      <ul className="structure-list" aria-label={t("list.ariaStructures")}>
         {structures.map((structure) => (
           <li key={structure.name}>
             <Link className="structure-link" href={structurePath(structure.name)}>
               <span className="list-icon"><Box size={21} strokeWidth={1.6} /></span>
               <span className="structure-list-details">
                 <strong>{structure.name}</strong>
-                <span>{numberFormat.format(structure.blockCount)} {structure.blockCount === 1 ? "block" : "blocks"}</span>
+                <span>{numberFormat.format(structure.blockCount)} {t("viewer.blockCount", { count: structure.blockCount })}</span>
               </span>
               {structure.bounds && <span className="list-dimensions">{formatDimensions(structure.bounds)}</span>}
               <ArrowUpRight size={18} aria-hidden />
