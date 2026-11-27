@@ -3,6 +3,7 @@ import { Button } from "@charlotte-ui/button";
 import { Card, CardContent } from "@charlotte-ui/card";
 import { getSignInFailure } from "../../../src/server/sign-in-failure";
 import { Brandmark } from "../../../src/viewer/brandmark";
+import { getTranslations } from "next-intl/server";
 
 export const metadata: Metadata = { title: "Sign-in help", robots: { index: false, follow: false } };
 
@@ -11,6 +12,7 @@ export default async function SignInErrorPage({
 }: {
   searchParams: Promise<{ reason?: string | string[] }>;
 }) {
+  const t = await getTranslations();
   const { reason, title, message, code } = getSignInFailure((await searchParams).reason);
 
   return (
@@ -25,8 +27,8 @@ export default async function SignInErrorPage({
           </div>
           <Button asChild>
             {reason === "disabled"
-              ? <a href="/">Open Tsumiki</a>
-              : <a href="/auth/login">{reason === "invalid_target" ? "Retry sign-in" : "Start sign-in again"}</a>}
+              ? <a href="/">{t("app.name")}</a>
+              : <a href="/auth/login">{reason === "invalid_target" ? t("auth.error.retry") : t("auth.error.restart")}</a>}
           </Button>
         </CardContent>
       </Card>
