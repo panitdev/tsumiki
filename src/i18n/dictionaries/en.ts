@@ -29,9 +29,16 @@ export const en = {
   },
   header: {
     signOut: "Sign out",
+    language: "Language",
   },
 } as const;
 
-export type Messages = typeof en;
+// Widen the literal string types from `as const` so other locales can supply
+// their own copy for every key while keeping the exact key structure.
+type Widen<T> = T extends string
+  ? string
+  : { [Key in keyof T]: Widen<T[Key]> };
+
+export type Messages = Widen<typeof en>;
 
 export default en;

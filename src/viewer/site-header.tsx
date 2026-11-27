@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { Button } from "@charlotte-ui/button";
+import { getTranslations } from "next-intl/server";
 import { browserAuthEnabled } from "../server/browser-auth";
 import { mcpOAuthConfig } from "../server/mcp-oauth";
 import { Brandmark } from "./brandmark";
 import { AgentConnection } from "./agent-connection";
+import { LocaleSwitcher } from "./locale-switcher";
 
-export function SiteHeader() {
+export async function SiteHeader() {
+  const t = await getTranslations("header");
   const oauth = browserAuthEnabled();
   let mcpOauth = false;
   let publicEndpoint: string | undefined;
@@ -22,10 +25,11 @@ export function SiteHeader() {
         <Brandmark />
       </Link>
       <div className="flex items-center gap-2">
+        <LocaleSwitcher />
         <AgentConnection oauth={mcpOauth} publicEndpoint={publicEndpoint} />
         {oauth && (
           <form action="/auth/logout" method="post">
-            <Button type="submit" variant="outline" size="sm">Sign out</Button>
+            <Button type="submit" variant="outline" size="sm">{t("signOut")}</Button>
           </form>
         )}
       </div>

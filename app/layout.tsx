@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { getTranslations } from "next-intl/server";
 import { NextIntlClientProvider } from "next-intl";
-import { getMessages } from "next-intl/server";
+import { getLocale, getMessages } from "next-intl/server";
 import { AmbientBackground } from "@charlotte-ui/labs/ambient-background";
 import { MockGate } from "../src/mocks/boot";
 import "@fontsource-variable/geist-mono";
@@ -23,11 +23,12 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
+  const locale = await getLocale();
   const messages = await getMessages();
   return (
-    <html lang="en">
+    <html lang={locale}>
       <body>
-        <NextIntlClientProvider messages={messages}>
+        <NextIntlClientProvider locale={locale} messages={messages}>
           <AmbientBackground className="site-background" />
           <MockGate>
             {children}
